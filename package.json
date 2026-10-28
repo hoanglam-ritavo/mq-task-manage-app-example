@@ -1,0 +1,42 @@
+{
+  "name": "task-manage-app-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true });\" && tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format:check": "prettier --check .",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:rabbitmq": "vitest run tests/rabbitmq-broker.test.ts"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "pino": "^10.1.0",
+    "zod": "^4.1.12",
+    "amqplib": "2.2.0",
+    "amqp-connection-manager": "5.0.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/express": "^5.0.5",
+    "@types/node": "^24.10.0",
+    "@types/supertest": "^6.0.3",
+    "eslint": "^10.13.0",
+    "globals": "^16.5.0",
+    "prettier": "^3.6.2",
+    "supertest": "^7.1.4",
+    "tsx": "^4.20.6",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.46.3",
+    "vitest": "^4.0.6"
+  }
+}
