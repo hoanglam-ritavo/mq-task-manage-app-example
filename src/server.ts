@@ -1,3 +1,4 @@
+import { registerEmployeeProfileConsumer } from './modules/employee-profile/index.js';
 import { createRabbitMq } from './helper/rabbitmq/index.js';
 import { createShutdown } from './shutdown.js';
 import { createApp } from './app.js';
@@ -8,6 +9,7 @@ function main() {
   const config = loadConfig();
   const logger = createLogger(config);
   const messaging = createRabbitMq(config.rabbitmq, logger);
+  if (config.rabbitmq.enabled) registerEmployeeProfileConsumer(messaging);
   messaging.start();
   const server = createApp(config, logger).listen(config.port, () => {
     logger.info({ port: config.port }, 'HTTP server listening');

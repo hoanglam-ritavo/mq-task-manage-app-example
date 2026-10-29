@@ -94,7 +94,7 @@ tiến trình con; các lần chạy được cấp quyền đã hoàn tất.
 
 Each app owns its independent [RabbitMQ helper](src/helper/rabbitmq/index.ts).
 AMQP 0.9.1 uses pinned amqplib 2.2.0 and amqp-connection-manager 5.0.1.
-No NestJS, cross-repository imports, database, outbox/inbox, business subscriptions
+No NestJS, cross-repository runtime imports, database or outbox/inbox
 or new HTTP endpoints are introduced. `/health` remains HTTP liveness only.
 
 ### Configuration
@@ -274,3 +274,56 @@ RABBITMQ_TEST_URL remains test-only. Docker CLI and test URL were unavailable;
 real broker connection, TLS handshake and quorum behavior were not verified.
 No .env, Compose credentials, dependencies, business handlers or broker topology
 were modified in this change. Previous verification snapshots above remain historical.
+
+## Employee profile pipeline example (2026-10-29)
+
+The server registers the consumer in [employee-profile](src/modules/employee-profile/index.ts)
+before messaging.start() when RABBITMQ_ENABLED=true. No additional example flag is required.
+The durable topic exchange is rita.employee-profile.events; routing key/type is
+employee.profiles.changed, schemaVersion=1, source=rita-id. This app owns queue
+task-manage-app-example.employee-profile. Sale and Task use different queues bound to the same key.
+Private retry/DLQ topology remains owned by each subscription.
+
+Data is { syncRunId, employees }, with UUID run/user identities and 1-200 employees.
+Each item has exactly _id, name, email, employee_id, phone_number, active,
+is_developer, groups (EMPLOYEE), avatar and position { text, parser }. Nullable
+fields are explicit; parser contains group/company/department/board/region/store/
+warehouse/factory/workshop/showroom/center/cafe strings and others string[].
+Unknown fields or invalid metadata/data are rejected into the helper DLQ.
+The handler calls console.log(message.data) only after validation, then returns
+for ack. Use suitable fictional demo data: profile console output is not a
+production logging policy. A source string is not broker authorization.
+
+Enable messaging on both examples and Rita ID using the existing split connection
+env, same broker/vhost. Start both consumers and wait for ready subscriptions
+before allowing Rita ID cron with HRM_SYNC_ENABLED=true to run. The backend
+publishes only committed changes in active, employee_id or departmentName;
+login/OAuth, snapshot refresh and profile API reads never publish. Payload is an
+allowlisted committed internal profile, not a fresh HTTP response.
+
+This is best-effort: a login can update first and hide the change from cron;
+failed publishing after commit is not resent next run. Backend messages are bounded
+to 200 items and 256 KiB UTF-8 per envelope; oversized individual profiles are
+skipped. No consumer database, inbox, revision, backfill or absolute ordering is
+provided; duplicates can be logged. Start consumers first: confirms do not prove
+both queues exist. Keep the single-backend-process restriction. Existing HTTP
+liveness, offline startup and shutdown draining remain in place.
+
+Cross-app opt-in test runs from the sibling backend:
+
+```sh
+npm test -- --runInBand src/module/odoo-hrm/service/employee-profile-broker.spec.ts
+```
+
+It requires dependencies in all three sibling checkouts and an explicit disposable
+RABBITMQ_TEST_URL, never application .env. The backend business publisher uses
+fictional committed profiles with real consumer modules in child processes;
+resources are UUID-prefixed and cleaned in finally. It does not start HRM or a DB.
+Backend Compose is absent; do not use it as a runnable fixture. Existing example
+Compose options are alternatives: run only one local broker.
+
+Verification 2026-10-29, employee-profile working tree: typecheck, lint,
+format:check, build passed; Vitest **98 passed, 5 broker tests skipped** per app.
+The cross-app broker case is skipped without RABBITMQ_TEST_URL. Consumer-module
+import/clean-exit smoke passed without external connections. No actual broker,
+TLS, PostgreSQL locking/rollback or real HRM integration was verified.
