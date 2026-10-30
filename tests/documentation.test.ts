@@ -123,6 +123,8 @@ describe('Swagger documentation contract', () => {
       maxItems: 100,
     });
     expect(schema.properties.recipientUserIds.description).toContain('casing');
+    expect(schema.properties.type.description).toContain('BIRTHDAY');
+    expect(schema.properties.type.description).toContain('SYSTEM');
     expect(JSON.stringify(schema.properties.type)).not.toContain('"enum"');
     expect(JSON.stringify(schema.properties.priority)).not.toContain('"enum"');
     expect(JSON.stringify(schema.properties.custom_badge)).toContain(
@@ -139,6 +141,10 @@ describe('Swagger documentation contract', () => {
         .fn<NotificationPublisher['publish']>()
         .mockResolvedValue();
       const app = createApp(config, undefined, { publish });
+      expect(
+        operation(route).requestBody.content['application/json'].examples
+          .birthday!.value.type,
+      ).toBe('BIRTHDAY');
       for (const example of Object.values(
         operation(route).requestBody.content['application/json'].examples,
       )) {
@@ -158,7 +164,7 @@ describe('Swagger documentation contract', () => {
         expect(sent.data).toHaveProperty('summary', expect.any(String));
         expect(sent.data).toHaveProperty('scenario', 'task.' + route);
       }
-      expect(publish).toHaveBeenCalledTimes(3);
+      expect(publish).toHaveBeenCalledTimes(4);
     },
   );
   it('matches documented errors including parser and transport failures', async () => {

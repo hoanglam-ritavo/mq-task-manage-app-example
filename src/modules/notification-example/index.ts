@@ -57,7 +57,7 @@ export const requestSchema = z.strictObject({
     })
     .nullable(),
   type: enumInput.describe(
-    'Nhận diện WARNING, MESSAGE, REPORT, REMINDER, UPDATED, SYSTEM. Thiếu/null/chuỗi không hỗ trợ → SYSTEM tại Rita ID. So khớp chính xác; không trim/uppercase.',
+    'Nhận diện WARNING, MESSAGE, REPORT, REMINDER, UPDATED, SYSTEM. BIRTHDAY dành riêng cho Rita ID; producer bên ngoài gửi BIRTHDAY sẽ được backend chuyển thành SYSTEM. Thiếu/null/chuỗi không hỗ trợ → SYSTEM tại Rita ID. So khớp chính xác; không trim/uppercase.',
   ),
   priority: enumInput.describe(
     'Nhận diện LOW, MEDIUM, HIGH, URGENT. Thiếu/null/chuỗi không hỗ trợ → MEDIUM tại Rita ID. So khớp chính xác; không trim/uppercase.',

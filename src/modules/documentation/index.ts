@@ -120,6 +120,11 @@ export const openApiDocument = {
                           custom_badge: null,
                         },
                       },
+                      birthday: {
+                        summary:
+                          'BIRTHDAY nội bộ — backend chuyển thành SYSTEM',
+                        value: { ...full, type: 'BIRTHDAY' },
+                      },
                       fallback: {
                         summary: 'Chuỗi enum chưa hỗ trợ — Rita ID fallback',
                         value: {

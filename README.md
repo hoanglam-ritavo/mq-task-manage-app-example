@@ -454,3 +454,9 @@ Scope: module docs, metadata schema, wiring Express, dependencies và tests.
 - Chưa kiểm chứng tương tác Try it out trên trình duyệt: môi trường không có
   browser automation được cấu hình. HTTP/assets tests không thay thế browser smoke test.
 - Không chạy broker/DB thật, không sửa backend hoặc .env cá nhân.
+
+## External notification types — 2026-10-30
+
+Swagger có thêm example BIRTHDAY cho mỗi endpoint. Type công khai gồm WARNING, MESSAGE, REPORT, REMINDER, UPDATED, SYSTEM. BIRTHDAY dành riêng cho Rita ID; producer gửi nguyên chuỗi và backend chuyển thành SYSTEM trước handler. Thiếu/null/chuỗi chưa hỗ trợ cũng fallback; không trim/uppercase. Không giới hạn request thành enum và không đổi contract v2. Source chỉ là metadata khai báo, không chứng minh quyền.
+
+Verification: typecheck, lint, format check, build và Vitest PASS; 143 tests passed, 5 broker cases skipped vì không có URL disposable. HTTP tests xác nhận cả bốn Swagger examples, bao gồm BIRTHDAY được gửi nguyên bản. Dữ liệu tests hư cấu; không chạy broker/DB hoặc browser thật. Publisher doubles không chứng minh delivery hay persistence. Các kết quả cũ phía trên được giữ như lịch sử.
