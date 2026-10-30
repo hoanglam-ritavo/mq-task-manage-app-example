@@ -1,7 +1,14 @@
+import {
+  createNotificationExampleRouter,
+  type NotificationPublisher,
+} from '../modules/notification-example/index.js';
 import { Router } from 'express';
 
-export function createApiRouter() {
+export function createApiRouter(publisher?: NotificationPublisher) {
   const router = Router();
-  // Mount future feature routers here.
+  router.use(
+    '/examples/notifications',
+    createNotificationExampleRouter(publisher),
+  );
   return router;
 }

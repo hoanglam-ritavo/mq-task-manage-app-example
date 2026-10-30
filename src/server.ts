@@ -11,9 +11,12 @@ function main() {
   const messaging = createRabbitMq(config.rabbitmq, logger);
   if (config.rabbitmq.enabled) registerEmployeeProfileConsumer(messaging);
   messaging.start();
-  const server = createApp(config, logger).listen(config.port, () => {
-    logger.info({ port: config.port }, 'HTTP server listening');
-  });
+  const server = createApp(config, logger, messaging).listen(
+    config.port,
+    () => {
+      logger.info({ port: config.port }, 'HTTP server listening');
+    },
+  );
 
   server.on('error', () => {
     logger.fatal('HTTP server failed');

@@ -94,8 +94,7 @@ tiến trình con; các lần chạy được cấp quyền đã hoàn tất.
 
 Each app owns its independent [RabbitMQ helper](src/helper/rabbitmq/index.ts).
 AMQP 0.9.1 uses pinned amqplib 2.2.0 and amqp-connection-manager 5.0.1.
-No NestJS, cross-repository runtime imports, database or outbox/inbox
-or new HTTP endpoints are introduced. `/health` remains HTTP liveness only.
+No NestJS, cross-repository runtime imports, database or outbox/inbox are introduced. Notification example HTTP endpoints are described below. `/health` remains HTTP liveness only.
 
 ### Configuration
 
@@ -327,3 +326,131 @@ format:check, build passed; Vitest **98 passed, 5 broker tests skipped** per app
 The cross-app broker case is skipped without RABBITMQ_TEST_URL. Consumer-module
 import/clean-exit smoke passed without external connections. No actual broker,
 TLS, PostgreSQL locking/rollback or real HRM integration was verified.
+
+## Notification pipeline example v2 (2026-10-29)
+
+The [notification router](src/modules/notification-example/index.ts) simulates actions and publishes through the same messaging instance as pipeline 1. No order/task or notification is saved. These endpoints have no authentication/role checks; use only a controlled demo environment. createApp opens no external connection. Enable with the existing RABBITMQ_ENABLED settings, and start Rita ID's notification subscription before calling APIs.
+
+Only schemaVersion=2 is emitted/accepted. Source is task-manage-app-example, exchange rita.notification.events (topic), routing key/envelope type notification.requested, Rita queue rita-id.notifications. Endpoint sets scenario, message UUID and timestamp; clients cannot override them. Existing confirm, retry/DLQ and shutdown behavior is retained. Pipeline 1 is unchanged.
+
+All requests below use the app's configured HTTP port and Content-Type: application/json. UUIDs shown are fictional; project existence and actor permissions are not verified.
+
+```http
+POST /api/v1/examples/notifications/task-assigned
+Content-Type: application/json
+
+{
+  "actor": null,
+  "recipientUserIds": [
+    "a0e42d5d-33ec-4a72-8d71-7637c9559011"
+  ],
+  "title": "Demo notification",
+  "project_id": "710f5c04-08ba-4ee0-817c-7656121ca003",
+  "custom_badge": null
+}
+```
+
+```http
+POST /api/v1/examples/notifications/task-commented
+Content-Type: application/json
+
+{
+  "actor": null,
+  "recipientUserIds": [
+    "a0e42d5d-33ec-4a72-8d71-7637c9559011"
+  ],
+  "title": "Demo notification",
+  "project_id": "710f5c04-08ba-4ee0-817c-7656121ca003",
+  "custom_badge": null
+}
+```
+
+Required fields: actor (local User UUID or explicit null), project_id (local Project UUID), recipientUserIds (1-100 distinct UUIDs), nonblank title (max 200), custom_badge (null or object). Actor may also be a recipient; duplicate recipients are rejected case-insensitively. Null actor represents a system action, not an invalid UUID fallback.
+
+Summary is optional at HTTP, nonblank/max 2000 when supplied; otherwise the endpoint fills its scenario template. Wire messages always include summary. Badge object has exactly label (nonblank string, max 100) and required status (string max 100 or null). Missing badge/label/status, unknown fields or the old flat custom_badge_status are invalid. Text is not trimmed or uppercased. Optional type/priority accept string max 100 or null.
+
+Rita defaults missing/null/unknown type to SYSTEM and priority to MEDIUM. Badge null stays null; object status null/unknown defaults to DEFAULT. Valid enums remain unchanged, wrong types fail validation. Source/scenario/version/identity are never defaulted. Rita logs the normalized data and acknowledges afterward; it does not query/update users, projects or notifications. Logging can repeat; there is no inbox/outbox or guaranteed ordering.
+
+Invalid HTTP input returns 400 without publishing. 202 {messageId,status:"broker-confirmed",simulation:true} waits for broker confirmation, not consumer completion. Transport unavailable/rejected returns 503; DELIVERY_UNCERTAIN returns 504 and delivery may already have occurred. Errors keep {error:{code,message},messageId} once created. No automatic resend; a missing injected publisher yields UNAVAILABLE.
+
+### Generate local request bodies
+
+Run the standalone script from the sibling backend root (replace placeholders explicitly; repeat recipient-user-id for more recipients):
+
+```sh
+node scripts/generate-notification-examples.mjs --employees-file src/mock/employee_sso_store.json --users-file src/mock/res_users.json --actor-user-id "<USER_UUID>" --recipient-user-id "<RECIPIENT_UUID>" --sale-project-id "<SALE_PROJECT_UUID>" --task-project-id "<TASK_PROJECT_UUID>"
+```
+
+It joins res_users.odooId to HRM user_id for explicitly chosen active non-deleted EMPLOYEE users, requires a unique active HRM link, preserves internal UUIDs and uses HRM employee_name. It never guesses roles, users or project IDs. Project UUIDs are syntax-checked only; manager/customer/order/task details are fictional. Actor names in generated title/summary come from local data, not the static API fallback summary.
+
+Five body files and an endpoint README are written into backend .tmp/notification-examples/<run-uuid>/, outside Git. Each run is new; no source files are changed or messages sent. Do not copy personal payloads into tracked source/tests/build artifacts. This app never reads backend JSON at runtime. Use an HTTP client or curl --data-binary @file.json to send a chosen body after reviewing it; console output at Rita contains local identity/name data.
+
+### Rollout and validation
+
+Stop demo API calls, replace the single backend process with the v2 consumer and wait for ready, then update Sale/Task and send v2 bodies. Version 1 messages go to DLQ, without automatic conversion/replay or queue deletion. Start all subscriptions before demonstrating both pipelines. The backend Compose fixture remains absent.
+
+From the backend root, with an explicit disposable RABBITMQ_TEST_URL and dependencies in all three sibling checkouts:
+
+```sh
+npm test -- --runInBand src/module/notifications/notification-example-broker.spec.ts
+```
+
+The harness uses real example HTTP modules and Rita's subscription, UUID resource prefixes and finally cleanup. It tests five v2 scenarios, enum fallback, invalid data and v1 into DLQ; it does not load .env or start HRM/database. Missing URL means skipped.
+
+Verification 2026-10-29, v2 working tree: typecheck, lint, format check, build passed; Vitest **137 passed, 5 broker cases skipped**. Actual broker/TLS/database behavior remains unverified. No personal payload generation was performed without explicit selected UUIDs.
+
+### Previous v1 verification
+
+Verification 2026-10-29, notification-example working tree: typecheck, lint, build and format:check passed (initial new-module formatting issue corrected). Vitest: **126 passed, 5 broker cases skipped**. Pipeline 1, HTTP health and lifecycle tests are included. Cross-app harness module import/clean-exit smoke passed without connections; actual RabbitMQ delivery/TLS and database integration remain unverified.
+
+## Swagger UI — pipeline 2 v2
+
+Swagger luôn bật, kể cả production và RabbitMQ disabled/offline:
+
+- UI: http://localhost:4102/docs
+- OpenAPI 3.1: http://localhost:4102/openapi.json
+- Nhóm Notification examples chứa 2 POST APIs; Health chứa HTTP liveness.
+
+Chạy app bằng `npm run dev` hoặc `npm run build` rồi `npm start`.
+UI dùng assets local, gọi cùng origin, không gửi spec tới online validator.
+Không thêm cờ env; docs không mở kết nối broker.
+
+Để demo end-to-end: cấu hình cùng broker/vhost, khởi động Rita ID và chờ
+consumer notification ready; sau đó mở Swagger của app này, mở endpoint,
+chọn example, bấm **Try it out**, sửa JSON và **Execute**. Với messaging
+disabled/offline, docs vẫn hoạt động nhưng POST trả 503.
+
+Mỗi endpoint có ba examples: đầy đủ, actor/badge null với summary mặc định,
+và chuỗi enum chưa hỗ trợ. UUID/tên mẫu là hư cấu, không chứng minh user/project
+tồn tại. Có thể dán body JSON do generator local
+`generate-notification-examples.mjs` trong backend tạo vào ô request;
+không đưa payload cá nhân vào source/specification.
+
+Actor, project_id, recipientUserIds, title và custom_badge là bắt buộc.
+Actor/badge cho phép null; summary thiếu dùng template endpoint.
+Type/priority/status nhận chuỗi chưa hỗ trợ để Rita ID fallback về
+SYSTEM/MEDIUM/DEFAULT; badge null giữ null. So khớp chính xác, không trim/uppercase.
+Recipient không được trùng kể cả khác casing; schema JSON không thay thế
+toàn bộ validation runtime.
+
+202 chỉ xác nhận broker, không chứng minh Rita ID đã log. 400 là request sai;
+413 là body quá lớn; 503 là transport unavailable/rejected; 504 là
+DELIVERY_UNCERTAIN, message có thể đã được gửi. UI không tự retry.
+Endpoint chưa có auth, không tạo đơn hàng/task thật, không xác minh quyền hoặc
+sự tồn tại của các UUID; chỉ dùng trong môi trường demo có kiểm soát.
+Nội dung gửi có thể xuất hiện trong console Rita ID.
+
+### Swagger verification — 2026-10-29
+
+Working tree trên revision 8ae62c3; giữ nguyên các snapshot kiểm chứng trước đó.
+Scope: module docs, metadata schema, wiring Express, dependencies và tests.
+
+- PASS: `npm run typecheck`, `npm run lint`, `npm run format:check`, `npm run build`.
+- PASS: `npm test` — 143 passed, 5 skipped; 9 suites passed, 1 skipped.
+- HTTP tests kiểm tra UI/assets/spec khi messaging disabled trong test/production,
+  danh sách route, examples qua validator thật, envelope v2 và response 202/400/413/503/504.
+- 5 broker tests skipped vì không cung cấp RABBITMQ_TEST_URL disposable.
+  Publisher doubles không chứng minh broker delivery.
+- Chưa kiểm chứng tương tác Try it out trên trình duyệt: môi trường không có
+  browser automation được cấu hình. HTTP/assets tests không thay thế browser smoke test.
+- Không chạy broker/DB thật, không sửa backend hoặc .env cá nhân.
