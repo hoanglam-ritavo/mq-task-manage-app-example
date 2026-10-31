@@ -22,47 +22,98 @@ const nonblank = (max: number) =>
     .refine((value) => value.trim().length > 0)
     .meta({ description: 'Chuỗi không trắng; không tự trim.', pattern: '\\S' });
 const enumInput = z.string().max(100).nullable().optional();
-export const requestSchema = z.strictObject({
-  actor: z
-    .uuid()
-    .nullable()
-    .describe(
-      'UUID Rita ID user hoặc null cho hành động hệ thống; bắt buộc có mặt.',
+export const requestSchema = z
+  .strictObject({
+    group: z
+      .strictObject({
+        key: nonblank(200),
+        type: z.enum(['COUPLE', 'MULTIPLE']),
+        name: nonblank(200).nullable(),
+      })
+      .optional(),
+    message: z
+      .strictObject({
+        id: nonblank(200),
+        text: nonblank(2000),
+        sentAt: z
+          .string()
+          .refine((value) => {
+            if (
+              !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(
+                value,
+              ) ||
+              !Number.isFinite(Date.parse(value))
+            )
+              return false;
+            return (
+              new Date(value).toISOString().replace(/\.000Z$/, 'Z') ===
+              value
+                .replace(
+                  /\.(\d{1,2})Z$/,
+                  (_, digits: string) => '.' + digits.padEnd(3, '0') + 'Z',
+                )
+                .replace(/\.000Z$/, 'Z')
+            );
+          })
+          .meta({
+            format: 'date-time',
+            description:
+              'Valid ISO UTC timestamp, precision up to milliseconds.',
+          }),
+      })
+      .optional(),
+    actor: z
+      .uuid()
+      .nullable()
+      .describe(
+        'UUID Rita ID user hoặc null cho hành động hệ thống; bắt buộc có mặt.',
+      ),
+    project_id: z
+      .uuid()
+      .describe('UUID Project của Rita ID; không phải ID đơn hàng/task.'),
+    recipientUserIds: z
+      .array(z.uuid())
+      .min(1)
+      .max(100)
+      .refine(
+        (ids) => new Set(ids.map((id) => id.toLowerCase())).size === ids.length,
+      )
+      .describe(
+        '1–100 UUID Rita ID user; không trùng kể cả khác casing. Chỉ kiểm tra cấu trúc.',
+      ),
+    title: nonblank(200),
+    summary: nonblank(2000).optional(),
+    custom_badge: z
+      .strictObject({
+        label: nonblank(100),
+        status: z
+          .string()
+          .max(100)
+          .nullable()
+          .describe(
+            'Nhận diện DEFAULT, SUCCESS, WARNING, DANGEROUS. Null hoặc chuỗi không hỗ trợ → DEFAULT tại Rita ID. So khớp chính xác; không trim/uppercase.',
+          ),
+      })
+      .nullable(),
+    type: enumInput.describe(
+      'Nhận diện WARNING, MESSAGE, REPORT, REMINDER, UPDATED, SYSTEM. BIRTHDAY dành riêng cho Rita ID; producer bên ngoài gửi BIRTHDAY sẽ được backend chuyển thành SYSTEM. Thiếu/null/chuỗi không hỗ trợ → SYSTEM tại Rita ID. So khớp chính xác; không trim/uppercase.',
     ),
-  project_id: z
-    .uuid()
-    .describe('UUID Project của Rita ID; không phải ID đơn hàng/task.'),
-  recipientUserIds: z
-    .array(z.uuid())
-    .min(1)
-    .max(100)
-    .refine(
-      (ids) => new Set(ids.map((id) => id.toLowerCase())).size === ids.length,
-    )
-    .describe(
-      '1–100 UUID Rita ID user; không trùng kể cả khác casing. Chỉ kiểm tra cấu trúc.',
+    priority: enumInput.describe(
+      'Nhận diện LOW, MEDIUM, HIGH, URGENT. Thiếu/null/chuỗi không hỗ trợ → MEDIUM tại Rita ID. So khớp chính xác; không trim/uppercase.',
     ),
-  title: nonblank(200),
-  summary: nonblank(2000).optional(),
-  custom_badge: z
-    .strictObject({
-      label: nonblank(100),
-      status: z
-        .string()
-        .max(100)
-        .nullable()
-        .describe(
-          'Nhận diện DEFAULT, SUCCESS, WARNING, DANGEROUS. Null hoặc chuỗi không hỗ trợ → DEFAULT tại Rita ID. So khớp chính xác; không trim/uppercase.',
-        ),
-    })
-    .nullable(),
-  type: enumInput.describe(
-    'Nhận diện WARNING, MESSAGE, REPORT, REMINDER, UPDATED, SYSTEM. BIRTHDAY dành riêng cho Rita ID; producer bên ngoài gửi BIRTHDAY sẽ được backend chuyển thành SYSTEM. Thiếu/null/chuỗi không hỗ trợ → SYSTEM tại Rita ID. So khớp chính xác; không trim/uppercase.',
-  ),
-  priority: enumInput.describe(
-    'Nhận diện LOW, MEDIUM, HIGH, URGENT. Thiếu/null/chuỗi không hỗ trợ → MEDIUM tại Rita ID. So khớp chính xác; không trim/uppercase.',
-  ),
-});
+  })
+  .superRefine((data, ctx) => {
+    if (
+      data.type === 'MESSAGE'
+        ? !data.group || !data.message
+        : data.group !== undefined || data.message !== undefined
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'MESSAGE requires group and message; other types forbid them.',
+      });
+    }
+  });
 export type NotificationExampleRequest = z.infer<typeof requestSchema>;
 
 const transportCodes = new Set([
@@ -101,7 +152,7 @@ export function createNotificationExampleRouter(
       const message: MessageEnvelope = {
         messageId: randomUUID(),
         type: NOTIFICATION_TYPE,
-        schemaVersion: 2,
+        schemaVersion: 3,
         source: 'task-manage-app-example',
         occurredAt: new Date().toISOString(),
         data: {

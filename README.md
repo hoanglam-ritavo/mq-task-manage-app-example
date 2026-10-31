@@ -196,7 +196,7 @@ Producer tự thêm scenario/source/version/messageId/occurredAt; không truyề
 5. Không trim/uppercase; sai kiểu bị validation từ chối. Không tự resend sau kết quả chưa xác định.
 
 API chưa có auth, không tạo đơn hàng/task thật. Rita ID có persistence đang phát triển,
-không còn chỉ log và chưa được coi là lưu recipients hoàn chỉnh. **Dùng dữ liệu và DB/broker cô lập**.
+consumer v3 lưu notification/recipients và receipt trong cùng transaction; chưa kiểm chứng DB/broker thật. **Dùng dữ liệu và DB/broker cô lập**.
 Có thể dán body từ [generator backend](../rita-id-backend/src/mock/README.md) vào Swagger;
 runtime không đọc JSON cá nhân/backend. Chi tiết backend trong note liên hệ thống, không phải dependency chạy app.
 
@@ -253,7 +253,44 @@ Không coi fixture transport là bằng chứng business pipeline toàn hệ sin
 Xem [chọn tests theo rủi ro](AGENTS.md#chọn-kiểm-chứng-theo-rủi-ro); docs-only không cần build/full Vitest.
 Mỗi app có dependencies/lockfile riêng, không cần backend chạy để kiểm HTTP với publisher double.
 
+## Pipeline 2 v3 — group/message preview (31/10/2026)
+
+Năm endpoint và response không đổi; notification envelope dùng schemaVersion **3**. Rita ID consumer v3 từ chối v2 vào DLQ, không tự replay. Schema backend phải được nâng trước code, sau đó chờ subscriptions ready và mới dùng producers v3. Pipeline 1 giữ version 1.
+
+Request type MESSAGE bắt buộc thêm hai object strict; type khác (kể cả BIRTHDAY được fallback SYSTEM) cấm group/message:
+
+```json
+{
+  "actor": null,
+  "recipientUserIds": ["22222222-2222-4222-8222-222222222222"],
+  "project_id": "33333333-3333-4333-8333-333333333333",
+  "title": "Bình luận demo",
+  "type": "MESSAGE",
+  "custom_badge": null,
+  "group": {
+    "key": "demo:thread",
+    "type": "MULTIPLE",
+    "name": "Demo conversation"
+  },
+  "message": {
+    "id": "demo:comment",
+    "text": "Nội dung hư cấu",
+    "sentAt": "2026-10-31T00:00:00Z"
+  }
+}
+```
+
+Dán vào endpoint hỗ trợ khách hàng hoặc bình luận task tương ứng; summary thiếu dùng template endpoint. Swagger thêm example **message** bên cạnh full/system/fallback/birthday. Key/message.id không trắng ≤200, group.name null hoặc không trắng ≤200; message.text plain text không trắng ≤2.000; sentAt là ISO UTC hợp lệ. Source/project scope định danh group, không chứng minh quyền. Không nhúng dữ liệu cá nhân vào Swagger.
+
+Backend tra actor/recipients/project tồn tại và chưa soft-delete trong transaction; thiếu bất kỳ identity nào sẽ DLQ toàn message. 202 chỉ là broker confirm, không phải commit. Receipt dedup theo source/branch/messageId; gọi HTTP lần nữa tạo ID mới nên không được chống trùng giữa hai request khác nhau. MESSAGE lưu snapshot riêng mỗi notification, không làm chat history. Setting internal backend độc lập với project settings, không thay đổi request external của app này.
+
+Credential Sale/Task chỉ được write exchange external, không được write/configure exchange internal của Rita ID. Cùng credential local chỉ là demo, không tạo ranh giới tin cậy. Chưa có auth ở các API demo, không có producer outbox; 504 có thể đã gửi, không tự resend. Chỉ dùng DB/broker demo cô lập.
+
 ## Current verification status
+
+### 31/10/2026 — notification v3 working tree
+
+Typecheck, lint read-only, build và format check: **pass**. Vitest: **151 passed, 5 broker tests skipped** vì thiếu RABBITMQ_TEST_URL. Tests dùng HTTP/publisher doubles, bao gồm MESSAGE conditional context và năm Swagger examples mỗi route. Chưa xác minh broker/DB/TLS/ACL thật; không chạy browser smoke trong đợt này. Các kết quả trước giữ bên dưới.
 
 Ngày 30/10/2026; revision `9e5e04a` cùng working tree. Scope chỉ README/ARCHITECTURE/AGENTS.
 PASS: 46 liên kết tương đối/anchors; JSON examples được kiểm tra với validator thuần hiện có (4 examples); command/test references được đối chiếu source. PASS: Prettier read-only trên ba file và git diff --check.

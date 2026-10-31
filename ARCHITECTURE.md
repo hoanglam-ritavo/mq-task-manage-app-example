@@ -144,7 +144,7 @@ Không có revision, inbox hoặc ordering tuyệt đối; log có thể trùng;
 
 App này là producer với source cố định `task-manage-app-example`.
 Exchange topic `rita.notification.events`, routing key/envelope.type `notification.requested`,
-schemaVersion=2. Queue `rita-id.notifications` do subscription backend quản lý; app này không đăng ký consumer notification.
+schemaVersion=3. Queue `rita-id.notifications` do subscription backend quản lý; app này không đăng ký consumer notification.
 
 ### HTTP request
 
@@ -158,6 +158,8 @@ interface NotificationExampleRequest {
   type?: string | null;
   priority?: string | null;
   custom_badge: { label: string; status: string | null } | null;
+  group?: { key: string; type: 'COUPLE' | 'MULTIPLE'; name: string | null };
+  message?: { id: string; text: string; sentAt: string };
 }
 ```
 
@@ -173,6 +175,8 @@ interface NotificationExampleRequest {
 | badge.status     | Bắt buộc khi có object, string tối đa 100 hoặc null                                   |
 | type/priority    | Optional string tối đa 100 hoặc null, không giới hạn thành enum tại producer          |
 
+MESSAGE bắt buộc có group/message; type khác cấm cả hai. Group/message objects strict: key/id không trắng ≤200; name bắt buộc null hoặc không trắng ≤200; text không trắng ≤2.000, plain text; sentAt ISO UTC thật, tối đa millisecond. Schema JSON có điều kiện if/then/else, validator runtime kiểm tra thêm nonblank/timestamp.
+
 Root/badge từ chối field thừa; không trim hoặc uppercase. Không nhận source/scenario/messageId/version từ caller.
 UUID chỉ kiểm tra cấu trúc, chưa có auth hoặc xác minh tồn tại/quyền tại producer.
 
@@ -185,13 +189,13 @@ type NotificationExampleData = Omit<NotificationExampleRequest, 'summary'> & {
   summary: string;
 };
 // MessageEnvelope<NotificationExampleData>:
-// type='notification.requested', schemaVersion=2,
+// type='notification.requested', schemaVersion=3,
 // source='task-manage-app-example', messageId=UUID, occurredAt=ISO UTC
 ```
 
 Producer bổ sung scenario từ endpoint, điền summary nếu thiếu, giữ nguyên actor/project/badge/type/priority.
 Không có actor/project entity hoặc readAt trên wire. Type optional vẫn có thể vắng mặt.
-Envelope có version 2 không đồng nghĩa version của API URL (/api/v1) phải là 2.
+Envelope version 3 độc lập với API URL /api/v1. Backend v3 từ chối v2 vào DLQ.
 
 Ví dụ envelope phát đi (dữ liệu hư cấu):
 
@@ -199,7 +203,7 @@ Ví dụ envelope phát đi (dữ liệu hư cấu):
 {
   "messageId": "11111111-1111-4111-8111-111111111111",
   "type": "notification.requested",
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "source": "task-manage-app-example",
   "occurredAt": "2026-10-30T00:00:00.000Z",
   "data": {
@@ -226,7 +230,7 @@ Envelope.type vẫn phải notification.requested; source/scenario/version sai k
 
 Publisher chờ confirm rồi trả 202. Không tự retry HTTP hoặc resend message; request mới tạo messageId mới.
 Chi tiết response và lỗi trong [README](README.md#response-http).
-Backend đã có code persistence đang phát triển; 202 không chứng minh notification/recipients đã lưu.
+Backend v3 có persistence transaction cùng receipt dedup; tra identity/project và dùng project preferences. 202 không chứng minh transaction đã commit. Mỗi notification giữ immutable snapshot group/message; source/project tự khai chưa là authorization.
 Xem [note backend tùy chọn](../rita-id-backend/docs/rabbitmq-business-pipelines.md) để biết hiện trạng;
 đường dẫn này cần sibling checkout, không phải dependency runtime.
 
@@ -241,7 +245,7 @@ Xem [note backend tùy chọn](../rita-id-backend/docs/rabbitmq-business-pipelin
 - Invalid JSON/envelope/payload hoặc NonRetryableMessageError vào DLQ; lỗi handler khác retry rồi DLQ.
 - Forward retry/DLQ phải confirm trước ack gốc; forward thất bại thì pause/drain/recover có backoff.
 - Durable quorum queues; retry TTL dùng at-least-once dead-lettering và reject-publish. Một node local không phải HA.
-- Không exactly-once, ordering tuyệt đối hoặc atomicity DB–broker. Không outbox/inbox hoặc tự replay DLQ.
+- Không exactly-once, ordering tuyệt đối hoặc atomicity DB–broker. App không có outbox/inbox hoặc tự replay DLQ; backend có receipt dedup riêng pipeline 2.
 - Header/source/user/project khai báo không thay authorization. Profile log chỉ dành cho demo phù hợp.
 
 ## Pipeline 3 và giới hạn ứng dụng

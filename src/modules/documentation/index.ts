@@ -44,9 +44,9 @@ export const openApiDocument = {
   openapi: '3.1.0',
   info: {
     title: service + ' — Notification examples',
-    version: '2.0.0',
+    version: '3.0.0',
     description:
-      'API mô phỏng pipeline 2, chưa có auth và không tạo đơn hàng/task thật. Actor, project và người nhận chỉ kiểm tra cấu trúc UUID, không xác minh tồn tại hoặc quyền. Chỉ dùng trong môi trường demo có kiểm soát. UUID và tên mẫu là hư cấu. Rita ID nhận, chuẩn hóa enum rồi log; không lưu notification. Có thể dán request JSON từ generator local vào Try it out. Không tự retry: gọi lại có thể tạo message trùng.',
+      'API mô phỏng pipeline 2, chưa có auth và không tạo đơn hàng/task thật. Actor, project và người nhận chỉ kiểm tra cấu trúc UUID, không xác minh tồn tại hoặc quyền. Chỉ dùng trong môi trường demo có kiểm soát. UUID và tên mẫu là hư cấu. Rita ID validates identities and persists notifications transactionally; use isolated demo storage. MESSAGE requires group/message; other types forbid them. Có thể dán request JSON từ generator local vào Try it out. Không tự retry: gọi lại có thể tạo message trùng.',
   },
   servers: [{ url: '/' }],
   tags: [{ name: 'Notification examples' }, { name: 'Health' }],
@@ -97,7 +97,7 @@ export const openApiDocument = {
               description:
                 'Nếu thiếu summary, producer dùng: ' +
                 summary +
-                '. Producer tự tạo scenario, source, messageId, occurredAt và schemaVersion=2; không gửi các field này trong body. Chờ Rita ID consumer ready trước khi gửi. 202 chỉ là broker confirm, không chứng minh Rita ID đã log.',
+                '. Producer tự tạo scenario, source, messageId, occurredAt và schemaVersion=3; không gửi các field này trong body. Chờ Rita ID consumer ready trước khi gửi. 202 chỉ là broker confirm, không chứng minh Rita ID đã commit.',
               requestBody: {
                 required: true,
                 content: {
@@ -106,6 +106,23 @@ export const openApiDocument = {
                       $ref: '#/components/schemas/NotificationExampleRequest',
                     },
                     examples: {
+                      message: {
+                        summary: 'MESSAGE with immutable group/message preview',
+                        value: {
+                          ...full,
+                          type: 'MESSAGE',
+                          group: {
+                            key: route + '-demo',
+                            type: 'MULTIPLE',
+                            name: 'Demo conversation',
+                          },
+                          message: {
+                            id: route + '-message-demo',
+                            text: 'Fictional message only',
+                            sentAt: '2026-10-31T00:00:00.000Z',
+                          },
+                        },
+                      },
                       full: {
                         summary: 'Payload đầy đủ — dữ liệu hư cấu',
                         value: full,
@@ -169,7 +186,27 @@ export const openApiDocument = {
       }),
     ),
   },
-  components: { schemas: { NotificationExampleRequest: inputSchema } },
+  components: {
+    schemas: {
+      NotificationExampleRequest: {
+        ...inputSchema,
+        allOf: [
+          {
+            if: {
+              properties: { type: { const: 'MESSAGE' } },
+              required: ['type'],
+            },
+            then: { required: ['group', 'message'] },
+            else: {
+              not: {
+                anyOf: [{ required: ['group'] }, { required: ['message'] }],
+              },
+            },
+          },
+        ],
+      },
+    },
+  },
 };
 
 export function createDocumentationRouter() {

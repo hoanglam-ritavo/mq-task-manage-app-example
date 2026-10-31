@@ -52,7 +52,7 @@ describe('Notification example HTTP APIs', () => {
         message: {
           messageId: response.body.messageId,
           type: 'notification.requested',
-          schemaVersion: 2,
+          schemaVersion: 3,
           source: 'task-manage-app-example',
           occurredAt: expect.any(String),
           data: {
@@ -188,5 +188,45 @@ describe('Notification example HTTP APIs', () => {
       .send(base)
       .expect(503);
     expect(absent.body.error.code).toBe('UNAVAILABLE');
+  });
+});
+
+describe('MESSAGE v3 conditional context', () => {
+  const group = { key: 'demo:thread', type: 'COUPLE', name: null };
+  const message = {
+    id: 'demo:message',
+    text: 'Fictional plain text',
+    sentAt: '2026-10-31T00:00:00Z',
+  };
+  it.each([
+    { type: 'MESSAGE' },
+    { type: 'MESSAGE', group },
+    { type: 'SYSTEM', group, message },
+    { type: 'BIRTHDAY', group, message },
+    { type: 'MESSAGE', group: { ...group, extra: true }, message },
+    {
+      type: 'MESSAGE',
+      group,
+      message: { ...message, sentAt: '2026-02-30T00:00:00Z' },
+    },
+    { type: 'MESSAGE', group, message: { ...message, text: '' } },
+  ])('rejects invalid context without publishing %j', async (patch) => {
+    const f = fixture();
+    await request(f.app)
+      .post(path + cases[0]![0])
+      .send({ ...base, ...patch })
+      .expect(400);
+    expect(f.publish).not.toHaveBeenCalled();
+  });
+  it('preserves valid preview and MESSAGE type in v3', async () => {
+    const f = fixture();
+    await request(f.app)
+      .post(path + cases[0]![0])
+      .send({ ...base, type: 'MESSAGE', group, message })
+      .expect(202);
+    expect(f.publish.mock.calls[0]![0].message).toMatchObject({
+      schemaVersion: 3,
+      data: { type: 'MESSAGE', group, message },
+    });
   });
 });
