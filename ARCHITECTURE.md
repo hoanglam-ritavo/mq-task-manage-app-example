@@ -1,6 +1,7 @@
 # Kiến trúc task-manage-app-example
 
 Đối chiếu source ngày 30/10/2026, revision `9e5e04a` cùng working tree tài liệu.
+Phần pipeline 1 được đối chiếu lại ngày 02/11/2026 với Backend hiện tại; các phần khác giữ mốc quan sát riêng.
 Đây là quan sát implementation, không phải bằng chứng vận hành broker/DB thật.
 Xem [hướng dẫn chạy](README.md), [quy tắc bảo trì](AGENTS.md).
 
@@ -70,9 +71,9 @@ Không nhầm envelope.type với data.type của notification.
 
 ## Pipeline 1 — contract dữ liệu nhận
 
-Backend Rita ID cron chỉ phát profile có thay đổi đã commit trong active, employee_id hoặc departmentName.
-Login/OAuth và API đọc không phát. Login cập nhật trước có thể khiến cron không còn phát hiện thay đổi.
-Đây là best-effort: commit rồi publish lỗi có thể mất event; không tự gửi bù.
+Backend ghi profile và outbox trong cùng transaction khi tạo employee lần đầu qua login hoặc khi login/cron thay đổi name, email, phoneNumber, avatar, active, employee_id hay departmentName. Chỉ đổi last_sync không phát. Event phản ánh profile đã commit, không chứng minh login đã hoàn tất thành công.
+Capture luôn hoạt động, độc lập RABBITMQ_ENABLED; false chỉ dừng transport và giữ backlog. HRM_SYNC_ENABLED chỉ điều khiển cron, không điều khiển login capture hoặc dispatcher.
+Luồng: transaction profile + outbox → dispatcher → RabbitMQ → validate/log → ACK. Lỗi ghi outbox rollback profile; broker offline giữ backlog. Consumer external chưa lưu profile.
 
 | Thành phần                   | Giá trị                                  |
 | ---------------------------- | ---------------------------------------- |
@@ -134,11 +135,35 @@ interface EmployeeProfilesChangedData {
 | position.parser                               | Đủ 12 string và others string[]; không suy luận cấp tổ chức               |
 | Objects                                       | Strict: từ chối field ngoài contract ở data, employee, position và parser |
 
-256 KiB UTF-8 toàn envelope là giới hạn batching publisher backend, không phải byte-size validator consumer.
+256 KiB UTF-8 toàn envelope là giới hạn mỗi event của outbox publisher Backend, không phải byte-size validator consumer. Event invalid/quá lớn làm transaction capture thất bại, không bị bỏ âm thầm.
 Consumer kiểm tra envelope type/version/source, parse data, rồi handle gọi console.log(message.data);
 helper chỉ ack sau handler thành công. Không lưu profile, không mapping user hoặc gọi API Rita ID.
 Department bị xóa thể hiện position.text=null. Missing employee hợp lệ có thể tạo active=false với profile cũ.
-Không có revision, inbox hoặc ordering tuyệt đối; log có thể trùng; queue mới không nhận lịch sử.
+Không có revision trên wire, inbox hoặc ordering tuyệt đối; log có thể trùng; queue mới không nhận lịch sử.
+
+### Ngữ nghĩa và phạm vi sync
+
+| Nội dung     | Cách hiểu đúng                                                                                                                                       |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| _id          | UUID Rita ID tương ứng SSO sub; liên kết external user bằng UUID, không merge bằng email, employee code hoặc odooId.                                 |
+| messageId    | ID event ổn định qua retry; khác ID attempt publish. Consumer demo chưa lưu dedup.                                                                   |
+| syncRunId    | UUID thao tác: run cron, thao tác login hoặc run backfill; không phải khóa chống trùng từng event.                                                   |
+| occurredAt   | Thời điểm đóng gói được giữ qua retry, không phải revision hoặc thời điểm commit chính xác.                                                          |
+| employees    | Validator nhận 1–200 items; outbox hiện gửi một employee/message. Không phải toàn bộ danh bạ; employee vắng trong message không có nghĩa bị xóa.     |
+| Revision     | Bigint bền vững theo employee chỉ lưu ở Backend, chưa có trên wire v1. Snapshot version trong RAM và timestamp không thay thế revision.              |
+| is_developer | Có trong payload nhưng đổi quyền không tự kích hoạt event; stream không thay cơ chế phân quyền.                                                      |
+| Phạm vi      | Profile EMPLOYEE internal Rita ID, không tự cung cấp toàn bộ HRM. Cron không tạo user mới; xóa user và chỉnh sửa ngoài login/cron chưa được capture. |
+
+Backend chỉ dispatch revision sớm nhất chưa SENT của mỗi employee. Điều này không bảo đảm thứ tự hoàn tất ở external: A lỗi vào retry, B xử lý trước, rồi A quay lại. Crash sau confirm trước ghi SENT có thể giao lại cùng messageId. Consumer demo chưa chống trùng hoặc dữ liệu cũ ghi đè mới.
+
+### Khi phát triển consumer production
+
+Đây là công việc tương lai, chưa triển khai trong example và không thay contract v1:
+
+- Ghi profile và dấu đã xử lý event trong cùng transaction; handler await commit để helper ACK sau thành công. Giữ UUID identity và xác định trường do Rita ID sở hữu.
+- Thiết kế chống trùng và xử lý event cũ trước khi cập nhật dữ liệu thật. V1 chưa có revision để kiểm tra mới/cũ đáng tin cậy; không lấy timestamp hoặc syncRunId thay thế.
+- Thiết kế bootstrap, đối soát/resync và replay DLQ có kiểm soát; chưa có resync tự động hoặc theo từng consumer.
+- Phối hợp nâng version producer/consumer: validator hiện chỉ nhận v1 và strict data, không tự chấp nhận field mới. Contract tiếp theo và rollout cần được chốt riêng.
 
 ## Pipeline 2 — contract dữ liệu gửi
 

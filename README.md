@@ -88,10 +88,9 @@ Module [employee-profile](src/modules/employee-profile/index.ts) đăng ký trư
 Queue app này: `task-manage-app-example.employee-profile`; exchange `rita.employee-profile.events`;
 routing/type `employee.profiles.changed`, version 1, source rita-id.
 
-Chạy Sale/Task trước, chờ subscription ready (trạng thái helper getStatus, không phải HTTP health).
-Sau đó backend cron ở môi trường cô lập với HRM_SYNC_ENABLED=true có thể phát profile đã commit.
-Chỉ active/employee_id/departmentName đổi mới phát; login/OAuth không phát.
-Không có endpoint kích hoạt pipeline 1 và không hướng dẫn chạy live cron để nghiệm thu tài liệu.
+Backend ghi profile và outbox trong cùng transaction khi tạo employee lần đầu qua login hoặc khi login/cron thay đổi name, email, phoneNumber, avatar, active, employee_id hay departmentName. Chỉ đổi last_sync không phát. Event phản ánh profile đã commit, không chứng minh login đã hoàn tất thành công.
+Capture luôn hoạt động, độc lập RABBITMQ_ENABLED; false chỉ dừng transport và giữ backlog. HRM_SYNC_ENABLED chỉ điều khiển cron, không điều khiển login capture hoặc dispatcher.
+Không có endpoint HTTP tại example để kích hoạt pipeline 1.
 
 Envelope hư cấu hợp lệ:
 
@@ -140,11 +139,31 @@ Envelope hư cấu hợp lệ:
 ```
 
 Consumer validate rồi `console.log(message.data)`: output là syncRunId và employees, không phải toàn envelope.
-Không lưu DB/profile, không backfill/resync, không tự gọi backend.
+Không lưu DB/profile, không có inbox dedup hoặc kiểm soát revision, không tự backfill/resync hay gọi backend.
 Hai queue riêng giúp cả Sale và Task nhận bản sao; workers cùng queue chia việc.
-Không có thay đổi mục tiêu thì không publish; login cập nhật trước có thể làm cron không còn phát.
-Commit rồi publish lỗi có thể mất event, không tự gửi bù; log có thể trùng; queue mới không nhận lịch sử.
+Backend commit profile + outbox → dispatcher publish → broker confirm → consumer validate/log → ACK. Lỗi ghi outbox rollback transaction profile; broker offline giữ backlog đã lưu. Dispatcher đánh dấu SENT sau confirm không bị mandatory return, không phải xác nhận mọi external đã xử lý. Log có thể trùng; queue mới không tự nhận lịch sử.
 Xem [interfaces và validation](ARCHITECTURE.md#pipeline-1--contract-dữ-liệu-nhận).
+
+### Vận hành và phục hồi pipeline 1
+
+1. Dùng cùng broker/vhost cho Backend, Sale và Task. Khởi động hai consumer enabled để provision cả hai queue/binding trước khi Backend dispatch; Backend không tạo queue đích.
+2. Trong RabbitMQ Management (Compose local: http://localhost:15673), chọn đúng vhost, kiểm tra exchange rita.employee-profile.events có binding employee.profiles.changed tới cả hai queue ở bảng contract. Kiểm tra consumer count, Ready/Unacked và các queue retry/dead. Broker connected hoặc HTTP /health không đủ chứng minh subscription ready. getStatus() chỉ là API helper trong code, chưa có endpoint/CLI công khai.
+3. Sau khi Backend có schema hợp lệ, chỉ chạy một process Backend. Login tạo/cập nhật profile hoặc cron enabled có thể capture; không cần bật cron để login capture/dispatcher hoạt động. Dùng dữ liệu hư cấu trong môi trường cô lập, không chạy live cron để nghiệm thu tài liệu.
+4. Theo dõi log outbox Backend (pending, parked, oldest pending age) và backlog/consumer/DLQ từng queue. Chưa có hệ thống cảnh báo hoặc replay tự động được cài đặt bởi example.
+
+| Chặng              | Kiểm tra và ý nghĩa                                                                                                                                                              |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Chưa capture       | Kiểm tra user EMPLOYEE internal, thay đổi trường được theo dõi hoặc tạo lần đầu, transaction và freshness snapshot. Chỉ last_sync đổi không có event; cron không tạo user mới.   |
+| Outbox PENDING     | Kiểm tra transport enabled, kết nối/backpressure và lịch retry. Publisher retry exponential backoff với jitter, ban đầu 500–1000 ms, tối đa 300 giây; giữ ID/payload.            |
+| Outbox PARKED      | UNROUTABLE hoặc lỗi envelope/topology cần sửa nguyên nhân rồi dùng retry CLI Backend. Revision sau của cùng employee bị chặn, employee khác tiếp tục.                            |
+| Routing/queue      | Kiểm tra đúng vhost/exchange và cả hai bindings. Confirm không chứng minh mọi subscriber đã nhận.                                                                                |
+| Consumer/retry/DLQ | Handler thành công mới ACK. Invalid JSON/envelope/payload vào DLQ; lỗi handler tạm thời retry 10/60/300 giây rồi DLQ. Retry quay về đúng queue, không broadcast lại cho app kia. |
+
+Consumer offline nhưng queue durable/binding còn tồn tại có thể nhận backlog khi chạy lại. Queue chưa tồn tại hoặc bị xóa không giữ lịch sử cho app đó; queue Sale còn tồn tại vẫn có thể khiến Backend nhận confirm dù Task bỏ lỡ event. SENT ở Backend không chứng minh external đã xử lý; log thành công ở example cũng không phải ghi database.
+
+Backfill/retry do người vận hành Backend thực hiện theo [runbook outbox](../rita-id-backend/docs/employee-profile-outbox.md#maintenance-commands), **chỉ khi Backend đã dừng hoàn toàn**. Giữ run UUID khi resume backfill và message ID/payload khi retry parked. Backfill phát trạng thái internal hiện tại qua exchange chung cho các queue đang bind; không đọc lại HRM, không phát lịch sử đầy đủ và không phải resync riêng một consumer. CLI retry parked không replay DLQ consumer. Không sửa tay payload/revision, đánh dấu SENT hoặc xóa backlog để xử lý sự cố.
+
+Cấp quyền broker phù hợp cho consumer provision/read queue và forwarding retry/DLQ; source trong JSON không xác thực producer. Không dùng credential demo làm ranh giới tin cậy. Profile log chứa dữ liệu cá nhân, chỉ dùng dữ liệu hư cấu; logging và retention production cần công việc riêng. Không dùng queue name của app khác cho một service mới vì workers cùng queue chia việc.
 
 ## Pipeline 2 — gửi notification
 
@@ -223,7 +242,7 @@ HTTP errors sanitized tiếng Anh; middleware chung còn có 404 NOT_FOUND và 5
 | UNROUTABLE                    | Rita ID queue/binding đã ready, đúng exchange/routing/vhost; confirm không chứng minh mọi subscriber |
 | 400                           | Field bắt buộc, strict root/badge, UUID, recipients trùng, title/summary trắng, độ dài               |
 | 504                           | Kết quả chưa xác định; không tự kết luận chưa gửi hoặc gọi lại mù quáng                              |
-| Không có log profile          | Consumer ready trước cron, queue riêng, có commit đổi ba field, backend cron enabled                 |
+| Không có log profile          | Kiểm tra từng chặng trong phần Vận hành và phục hồi pipeline 1; login hoặc cron có thể capture       |
 | Không thấy notification ở UI  | Producer confirm không chứng minh persistence/UI; xem giới hạn backend                               |
 
 ## Cấu trúc và thêm module
@@ -287,6 +306,14 @@ Backend tra actor/recipients/project tồn tại và chưa soft-delete trong tra
 Credential Sale/Task chỉ được write exchange external, không được write/configure exchange internal của Rita ID. Cùng credential local chỉ là demo, không tạo ranh giới tin cậy. Chưa có auth ở các API demo, không có producer outbox; 504 có thể đã gửi, không tự resend. Chỉ dùng DB/broker demo cô lập.
 
 ## Current verification status
+
+### 02/11/2026 — tài liệu profile sync liên hệ thống
+
+Đối chiếu revision `be9b214` cùng working tree chỉ sửa README/ARCHITECTURE. Trigger login/cron, outbox, contract v1 và troubleshooting đã đối chiếu source Backend và consumer; không đổi runtime/payload.
+
+- Kiểm tra tổng hợp hai examples: **60 liên kết/anchors**, **34 tham chiếu npm run** hợp lệ; **4 lượt validation** (hai JSON profile mẫu qua cả hai validator thuần) passed. JSON mẫu còn lại parse được; số đếm là chung, không cộng lại giữa hai repo.
+- Prettier read-only README/ARCHITECTURE: passed sau khi căn bảng liên quan; giữ nội dung ngoài phạm vi. git diff --check passed.
+- Kiểm tra bằng script đọc trực tiếp, không thêm test/tool vào repo. Không chạy build/full Vitest, ứng dụng, broker, DB, backfill hoặc migration. Đây là kiểm chứng tài liệu/validator, không chứng minh delivery hoặc persistence. Script outbox:contract:test phía Backend còn hardcode tên sibling cũ; xem runbook, không sửa script trong đợt tài liệu này.
 
 ### 31/10/2026 — notification v3 working tree
 
