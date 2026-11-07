@@ -81,7 +81,7 @@ describe('HTTP application', () => {
     const record = JSON.parse(output.trim()) as Record<string, unknown>;
     expect(record).toMatchObject({
       method: 'POST',
-      path: '/missing',
+      path: '/unmatched',
       status: 404,
     });
     expect(record.durationMs).toEqual(expect.any(Number));

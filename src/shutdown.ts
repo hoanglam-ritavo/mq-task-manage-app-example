@@ -2,7 +2,7 @@ import type { Server } from 'node:http';
 import type { Logger } from 'pino';
 export function createShutdown(
   server: Server,
-  messaging: { stop(): Promise<void> },
+  client: { stop(): Promise<void> },
   logger: Logger,
   setExitCode: (code: number) => void,
 ) {
@@ -29,7 +29,7 @@ export function createShutdown(
           resolve();
         });
       });
-      const results = await Promise.allSettled([http, messaging.stop()]);
+      const results = await Promise.allSettled([http, client.stop()]);
       setExitCode(
         failed || results.some((r) => r.status === 'rejected') ? 1 : 0,
       );

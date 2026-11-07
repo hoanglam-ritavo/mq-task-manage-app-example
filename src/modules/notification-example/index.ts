@@ -1,20 +1,8 @@
 import { Router } from 'express';
-import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import {
-  RabbitMqError,
-  type MessageEnvelope,
-} from '../../helper/rabbitmq/index.js';
-
-export const NOTIFICATION_EXCHANGE = 'rita.notification.events';
-export const NOTIFICATION_TYPE = 'notification.requested';
-export interface NotificationPublisher {
-  publish(input: {
-    exchange: string;
-    routingKey: string;
-    message: MessageEnvelope;
-  }): Promise<void>;
-}
+import { uuid, utcTimestamp } from '../../shared/contracts.js';
+import { AppError } from '../../shared/errors/app-error.js';
+import type { NotificationClient } from '../../helper/rita-http/notification-client.js';
 const nonblank = (max: number) =>
   z
     .string()
@@ -22,7 +10,7 @@ const nonblank = (max: number) =>
     .refine((value) => value.trim().length > 0)
     .meta({ description: 'Chuỗi không trắng; không tự trim.', pattern: '\\S' });
 const enumInput = z.string().max(100).nullable().optional();
-export const requestSchema = z
+export const notificationData = z
   .strictObject({
     group: z
       .strictObject({
@@ -68,9 +56,6 @@ export const requestSchema = z
       .describe(
         'UUID Rita ID user hoặc null cho hành động hệ thống; bắt buộc có mặt.',
       ),
-    project_id: z
-      .uuid()
-      .describe('UUID Project của Rita ID; không phải ID đơn hàng/task.'),
     recipientUserIds: z
       .array(z.uuid())
       .min(1)
@@ -114,82 +99,20 @@ export const requestSchema = z
       });
     }
   });
-export type NotificationExampleRequest = z.infer<typeof requestSchema>;
 
-const transportCodes = new Set([
-  'DISABLED',
-  'UNAVAILABLE',
-  'BLOCKED',
-  'BACKPRESSURE',
-  'IN_FLIGHT_LIMIT',
-  'STOPPING',
-  'UNROUTABLE',
-  'NACKED',
-  'DELIVERY_UNCERTAIN',
-]);
+export const requestSchema=z.strictObject({messageId:uuid,occurredAt:utcTimestamp,correlationId:z.string().refine(v=>!!v.trim()).optional(),data:notificationData});
+export type NotificationExampleRequest=z.infer<typeof requestSchema>;
 export const templates = {
   'task-assigned': 'Người quản lý đã tạo và giao task demo cho bạn',
   'task-commented': 'Nguyễn Văn A đã bình luận trong task của bạn',
 };
 
-/** Publisher injection keeps app creation free of external connections. */
-export function createNotificationExampleRouter(
-  publisher?: NotificationPublisher,
-) {
-  const router = Router();
-  for (const [route, summary] of Object.entries(templates)) {
-    router.post('/' + route, async (req, res) => {
-      const parsed = requestSchema.safeParse(req.body);
-      if (!parsed.success) {
-        res.status(400).json({
-          error: {
-            code: 'INVALID_NOTIFICATION_REQUEST',
-            message: 'Invalid notification example request.',
-          },
-        });
-        return;
-      }
-      const message: MessageEnvelope = {
-        messageId: randomUUID(),
-        type: NOTIFICATION_TYPE,
-        schemaVersion: 3,
-        source: 'task-manage-app-example',
-        occurredAt: new Date().toISOString(),
-        data: {
-          ...parsed.data,
-          scenario: 'task.' + route,
-          summary: parsed.data.summary ?? summary,
-        },
-      };
-      try {
-        if (!publisher) throw new RabbitMqError('UNAVAILABLE');
-        await publisher.publish({
-          exchange: NOTIFICATION_EXCHANGE,
-          routingKey: NOTIFICATION_TYPE,
-          message,
-        });
-        res.status(202).json({
-          messageId: message.messageId,
-          status: 'broker-confirmed',
-          simulation: true,
-        });
-      } catch (error) {
-        const code =
-          error instanceof RabbitMqError && transportCodes.has(error.code)
-            ? error.code
-            : 'PUBLISH_FAILED';
-        const uncertain = code === 'DELIVERY_UNCERTAIN';
-        res.status(uncertain ? 504 : 503).json({
-          messageId: message.messageId,
-          error: {
-            code,
-            message: uncertain
-              ? 'Delivery is uncertain; the message may have been sent.'
-              : 'Notification transport is unavailable or rejected the message.',
-          },
-        });
-      }
-    });
-  }
-  return router;
+
+export function createNotificationExampleRouter(client:NotificationClient){
+ const router=Router();for(const [route,summary]of Object.entries(templates))router.post('/'+route,async(req,res)=>{
+  const parsed=requestSchema.safeParse(req.body);if(!parsed.success)throw new AppError(400,'INVALID_NOTIFICATION_REQUEST','Invalid notification example request.');
+  const input={...parsed.data,messageId:parsed.data.messageId.toLowerCase(),data:{...parsed.data.data,scenario:'task.'+route,summary:parsed.data.data.summary??summary}};
+  try{await client.send(input);res.status(200).json({messageId:input.messageId,status:'accepted',simulation:true});}
+  catch(error:unknown){const e=error instanceof AppError?error:new AppError(502,'RITA_OUTCOME_UNKNOWN','Acceptance is unknown; retry the same identity and content.');res.status(e.status).json({messageId:input.messageId,error:{code:e.code,message:e.message}});}
+ });return router;
 }

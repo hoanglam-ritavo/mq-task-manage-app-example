@@ -14,12 +14,9 @@
     "lint": "eslint .",
     "format:check": "prettier --check .",
     "format": "prettier --write .",
-    "test": "vitest run",
-    "test:rabbitmq": "vitest run tests/rabbitmq-broker.test.ts"
+    "test": "vitest run"
   },
   "dependencies": {
-    "amqp-connection-manager": "5.0.1",
-    "amqplib": "2.2.0",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "pino": "^10.1.0",

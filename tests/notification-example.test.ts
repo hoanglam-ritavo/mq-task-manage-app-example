@@ -1,232 +1,49 @@
+
 import request from 'supertest';
-import { describe, it, expect, vi } from 'vitest';
-import { randomUUID } from 'node:crypto';
-import { createApp } from '../src/app.js';
-import { parseEnv } from '../src/config/env.js';
-import { RabbitMqError } from '../src/helper/rabbitmq/index.js';
-import type { NotificationPublisher } from '../src/modules/notification-example/index.js';
-
-const config = parseEnv({ NODE_ENV: 'test', LOG_LEVEL: 'silent' });
-const recipients = [randomUUID()];
-const base = {
-  actor: randomUUID(),
-  project_id: randomUUID(),
-  recipientUserIds: recipients,
-  title: 'Demo title',
-  custom_badge: null,
-};
-const cases = [
-  ['task-assigned', 'Người quản lý đã tạo và giao task demo cho bạn'],
-  ['task-commented', 'Nguyễn Văn A đã bình luận trong task của bạn'],
-];
-const path = '/api/v1/examples/notifications/';
-function fixture() {
-  const publish = vi.fn<NotificationPublisher['publish']>().mockResolvedValue();
-  return { publish, app: createApp(config, undefined, { publish }) };
-}
-describe('Notification example HTTP APIs', () => {
-  it('accepts explicit system actor and no badge', async () => {
-    const f = fixture();
-    await request(f.app)
-      .post(path + cases[0]![0])
-      .send({ ...base, actor: null })
-      .expect(202);
-    expect(f.publish.mock.calls[0]![0].message.data).toMatchObject({
-      actor: null,
-      custom_badge: null,
-    });
-  });
-  it.each(cases)(
-    'publishes %s with fixed identity and defaults',
-    async (route, summary) => {
-      const f = fixture();
-      const response = await request(f.app)
-        .post(path + route)
-        .send(base)
-        .expect(202);
-      expect(f.publish).toHaveBeenCalledTimes(1);
-      const sent = f.publish.mock.calls[0]![0];
-      expect(sent).toEqual({
-        exchange: 'rita.notification.events',
-        routingKey: 'notification.requested',
-        message: {
-          messageId: response.body.messageId,
-          type: 'notification.requested',
-          schemaVersion: 3,
-          source: 'task-manage-app-example',
-          occurredAt: expect.any(String),
-          data: {
-            scenario: 'task.' + route,
-            ...base,
-            summary,
-            custom_badge: null,
-          },
-        },
-      });
-      expect(response.body).toEqual({
-        messageId: expect.any(String),
-        status: 'broker-confirmed',
-        simulation: true,
-      });
-      expect(sent.message.messageId).toMatch(/^[0-9a-f-]{36}$/);
-      expect(new Date(sent.message.occurredAt).toISOString()).toBe(
-        sent.message.occurredAt,
-      );
-    },
-  );
-  it('preserves overrides and unsupported enum strings for consumer normalization', async () => {
-    const f = fixture();
-    const body = {
-      ...base,
-      title: ' Demo ',
-      summary: 'Custom',
-      custom_badge: { label: 'Badge', status: '' },
-      type: 'unknown',
-      priority: null,
-    };
-    await request(f.app)
-      .post(path + cases[0]![0])
-      .send(body)
-      .expect(202);
-    expect(f.publish.mock.calls[0]![0].message.data).toMatchObject(body);
-  });
-  it.each([
-    { title: undefined },
-    { actor: undefined },
-    { actor: 'bad' },
-    { project_id: undefined },
-    { project_id: 'bad' },
-    { custom_badge: undefined },
-    { custom_badge: { label: 'Badge' } },
-    { custom_badge: { status: null } },
-    { custom_badge: { label: ' ', status: null } },
-    { custom_badge: { label: 'Badge', status: null, extra: true } },
-    { custom_badge: { label: 'Badge', status: 3 } },
-    { recipientUserIds: [] },
-    { recipientUserIds: ['bad'] },
-    { recipientUserIds: [recipients[0], recipients[0]!.toUpperCase()] },
-    { recipientUserIds: Array.from({ length: 101 }, () => randomUUID()) },
-    { recipientUserIds: recipients, source: 'forged' },
-    { recipientUserIds: recipients, title: ' ' },
-    { recipientUserIds: recipients, title: 'x'.repeat(201) },
-    { recipientUserIds: recipients, summary: 'x'.repeat(2001) },
-    { recipientUserIds: recipients, custom_badge: 'x'.repeat(101) },
-    { recipientUserIds: recipients, priority: 4 },
-    { recipientUserIds: recipients, type: {} },
-    { recipientUserIds: recipients, custom_badge_status: [] },
-    { recipientUserIds: recipients, priority: 'x'.repeat(101) },
-  ])('rejects invalid body without publishing', async (body) => {
-    const f = fixture();
-    const response = await request(f.app)
-      .post(path + cases[0]![0])
-      .send({ ...base, ...body })
-      .expect(400);
-    expect(response.body.error.code).toBe('INVALID_NOTIFICATION_REQUEST');
-    expect(f.publish).not.toHaveBeenCalled();
-  });
-  it('waits for confirm before reporting success', async () => {
-    const f = fixture();
-    let entered!: () => void;
-    const started = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    let confirm!: () => void;
-    const waiting = new Promise<void>((resolve) => {
-      confirm = resolve;
-    });
-    f.publish.mockImplementation(() => {
-      entered();
-      return waiting;
-    });
-    let completed = false;
-    const response = request(f.app)
-      .post(path + cases[0]![0])
-      .send(base)
-      .then((r) => {
-        completed = true;
-        return r;
-      });
-    await started;
-    expect(completed).toBe(false);
-    confirm();
-    expect((await response).status).toBe(202);
-  });
-  it.each([
-    'DISABLED',
-    'UNAVAILABLE',
-    'BLOCKED',
-    'BACKPRESSURE',
-    'IN_FLIGHT_LIMIT',
-    'STOPPING',
-    'UNROUTABLE',
-    'NACKED',
-    'DELIVERY_UNCERTAIN',
-  ])('reports %s once without resend', async (code) => {
-    const f = fixture();
-    f.publish.mockRejectedValue(new RabbitMqError(code));
-    const response = await request(f.app)
-      .post(path + cases[0]![0])
-      .send(base)
-      .expect(code === 'DELIVERY_UNCERTAIN' ? 504 : 503);
-    expect(response.body.error.code).toBe(code);
-    expect(response.body.messageId).toBe(
-      f.publish.mock.calls[0]![0].message.messageId,
-    );
-    expect(f.publish).toHaveBeenCalledTimes(1);
-  });
-  it('sanitizes arbitrary failures and handles missing publisher without connection creation', async () => {
-    const f = fixture();
-    f.publish.mockRejectedValue(new Error('private payload or password'));
-    const failed = await request(f.app)
-      .post(path + cases[0]![0])
-      .send(base)
-      .expect(503);
-    expect(failed.body.error.code).toBe('PUBLISH_FAILED');
-    expect(JSON.stringify(failed.body)).not.toContain('private');
-    const absent = await request(createApp(config))
-      .post(path + cases[0]![0])
-      .send(base)
-      .expect(503);
-    expect(absent.body.error.code).toBe('UNAVAILABLE');
-  });
-});
-
-describe('MESSAGE v3 conditional context', () => {
-  const group = { key: 'demo:thread', type: 'COUPLE', name: null };
-  const message = {
-    id: 'demo:message',
-    text: 'Fictional plain text',
-    sentAt: '2026-10-31T00:00:00Z',
-  };
-  it.each([
-    { type: 'MESSAGE' },
-    { type: 'MESSAGE', group },
-    { type: 'SYSTEM', group, message },
-    { type: 'BIRTHDAY', group, message },
-    { type: 'MESSAGE', group: { ...group, extra: true }, message },
-    {
-      type: 'MESSAGE',
-      group,
-      message: { ...message, sentAt: '2026-02-30T00:00:00Z' },
-    },
-    { type: 'MESSAGE', group, message: { ...message, text: '' } },
-  ])('rejects invalid context without publishing %j', async (patch) => {
-    const f = fixture();
-    await request(f.app)
-      .post(path + cases[0]![0])
-      .send({ ...base, ...patch })
-      .expect(400);
-    expect(f.publish).not.toHaveBeenCalled();
-  });
-  it('preserves valid preview and MESSAGE type in v3', async () => {
-    const f = fixture();
-    await request(f.app)
-      .post(path + cases[0]![0])
-      .send({ ...base, type: 'MESSAGE', group, message })
-      .expect(202);
-    expect(f.publish.mock.calls[0]![0].message).toMatchObject({
-      schemaVersion: 3,
-      data: { type: 'MESSAGE', group, message },
-    });
-  });
+import {randomUUID} from 'node:crypto';
+import {describe,it,expect,vi} from 'vitest';
+import {createApp} from '../src/app.js';
+import {templates} from '../src/modules/notification-example/index.js';
+import {AppError} from '../src/shared/errors/app-error.js';
+import type {NotificationClient} from '../src/helper/rita-http/notification-client.js';
+import {config,token,input,userId,deferred} from './http-fixtures.js';
+const base='/api/v1/examples/notifications/';
+const routes=Object.keys(templates);
+const fixture=()=>{const send=vi.fn<NotificationClient['send']>().mockResolvedValue();return {send,app:createApp(config,undefined,{send,stop:async()=>undefined})};};
+describe('Notification HTTP demo',()=>{
+ it.each(routes)('maps %s to an authenticated endpoint request',async(route)=>{
+  const f=fixture(),body=input();const response=await request(f.app).post(base+route).auth(token,{type:'bearer'}).send(body).expect(200);
+  expect(response.body).toEqual({messageId:body.messageId,status:'accepted',simulation:true});expect(f.send).toHaveBeenCalledExactlyOnceWith({...body,data:{...body.data,scenario:'task.'+route,summary:templates[route as keyof typeof templates]}});
+  expect(f.send.mock.calls[0]![0]).not.toHaveProperty('source');expect(f.send.mock.calls[0]![0].data).not.toHaveProperty('project_id');
+ });
+ it('keeps overrides and enum strings for Rita normalization',async()=>{
+  const f=fixture(),body=input();await request(f.app).post(base+routes[0]).auth(token,{type:'bearer'}).send({...body,correlationId:'demo-correlation',data:{...body.data,summary:'Override',type:'BIRTHDAY',priority:'unknown',custom_badge:{label:'Badge',status:null}}}).expect(200);expect(f.send.mock.calls[0]![0].data).toMatchObject({type:'BIRTHDAY',priority:'unknown',summary:'Override'});
+ });
+ it.each([{actor:undefined},{actor:'bad'},{title:undefined},{title:' '},{title:'x'.repeat(201)},{summary:'x'.repeat(2001)},{recipientUserIds:[]},{recipientUserIds:['bad']},{recipientUserIds:[userId,userId.toUpperCase()]},{recipientUserIds:Array.from({length:101},()=>randomUUID())},{custom_badge:undefined},{custom_badge:{label:'Badge'}},{custom_badge:{status:null}},{custom_badge:{label:' ',status:null}},{custom_badge:{label:'Badge',status:3}},{custom_badge:{label:'Badge',status:null,extra:true}},{custom_badge:'invalid'},{type:{}},{priority:3},{priority:'x'.repeat(101)},{project_id:userId},{scenario:'forged'},{source:'forged'},{birthdayOccurrence:'2026-11-07'},{custom_badge_status:[]}])('rejects invalid data %j before sending',async(patch)=>{
+  const f=fixture(),body=input();await request(f.app).post(base+routes[0]).auth(token,{type:'bearer'}).send({...body,data:{...body.data,...patch}}).expect(400);expect(f.send).not.toHaveBeenCalled();
+ });
+ it.each([{messageId:undefined},{messageId:'bad'},{occurredAt:undefined},{occurredAt:'2026-02-30T00:00:00Z'},{correlationId:' '},{source:'forged'},{type:'event'},{schemaVersion:3},{project_id:userId}])('rejects invalid wrapper %j',async(patch)=>{
+  const f=fixture();await request(f.app).post(base+routes[0]).auth(token,{type:'bearer'}).send({...input(),...patch}).expect(400);expect(f.send).not.toHaveBeenCalled();
+ });
+ it('authenticates before JSON validation and never forwards either wrong credential',async()=>{
+  const f=fixture();for(const auth of [undefined,'Bearer wrong',config.rita.apiKey]){const r=request(f.app).post(base+routes[0]).set('Content-Type','application/json');if(auth)r.set('Authorization',auth);await r.send('{broken').expect(401);}expect(f.send).not.toHaveBeenCalled();
+  await request(createApp({...config,demoApiToken:undefined})).post(base+routes[0]).send(input()).expect(503);
+ });
+ it('awaits acceptance and manually repeats with the same identity',async()=>{
+  const f=fixture(),entered=deferred<void>(),release=deferred<void>(),body=input();f.send.mockImplementation(async()=>{entered.resolve();await release.promise;});let done=false;
+  const work=request(f.app).post(base+routes[0]).auth(token,{type:'bearer'}).send(body).then(r=>{done=true;return r;});await entered.promise;expect(done).toBe(false);release.resolve();expect((await work).status).toBe(200);
+  await request(f.app).post(base+routes[0]).auth(token,{type:'bearer'}).send(body);expect(f.send.mock.calls[0]).toEqual(f.send.mock.calls[1]);
+ });
+ it.each([400,409,413,502,503,504])('returns a controlled%s failure with stable identity',async(status)=>{
+  const f=fixture(),body=input();f.send.mockRejectedValue(new AppError(status,'CONTROLLED','Controlled failure.'));const r=await request(f.app).post(base+routes[0]).auth(token,{type:'bearer'}).send(body).expect(status);expect(r.body).toEqual({messageId:body.messageId,error:{code:'CONTROLLED',message:'Controlled failure.'}});expect(f.send).toHaveBeenCalledTimes(1);
+ });
+ it('sanitizes arbitrary exceptions and reports absent Rita settings without connections',async()=>{
+  const f=fixture();f.send.mockRejectedValue(new Error('private-key-response'));const r=await request(f.app).post(base+routes[0]).auth(token,{type:'bearer'}).send(input()).expect(502);expect(JSON.stringify(r.body)).not.toContain('private');
+  await request(createApp({...config,rita:{}})).post(base+routes[0]).auth(token,{type:'bearer'}).send(input()).expect(503);
+ });
+ it('keeps conditional MESSAGE context strict',async()=>{
+  const context={group:{key:'conversation:1',type:'COUPLE',name:null},message:{id:'m1',text:'Preview',sentAt:'2026-11-07T00:00:00Z'}};
+  for(const patch of [{type:'MESSAGE'},{type:'MESSAGE',group:context.group},{type:'MESSAGE',message:context.message},{...context,type:'SYSTEM'},{...context,type:'MESSAGE',message:{...context.message,sentAt:'invalid'}},{...context,type:'MESSAGE',group:{...context.group,extra:true}}]){const f=fixture(),body=input();await request(f.app).post(base+routes[0]).auth(token,{type:'bearer'}).send({...body,data:{...body.data,...patch}}).expect(400);expect(f.send).not.toHaveBeenCalled();}
+  const f=fixture(),body=input();await request(f.app).post(base+routes[0]).auth(token,{type:'bearer'}).send({...body,data:{...body.data,type:'MESSAGE',...context}}).expect(200);expect(f.send.mock.calls[0]![0].data).toMatchObject(context);
+ });
 });

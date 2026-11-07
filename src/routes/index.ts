@@ -1,14 +1,4 @@
-import {
-  createNotificationExampleRouter,
-  type NotificationPublisher,
-} from '../modules/notification-example/index.js';
 import { Router } from 'express';
-
-export function createApiRouter(publisher?: NotificationPublisher) {
-  const router = Router();
-  router.use(
-    '/examples/notifications',
-    createNotificationExampleRouter(publisher),
-  );
-  return router;
-}
+import { createNotificationExampleRouter } from '../modules/notification-example/index.js';
+import type { NotificationClient } from '../helper/rita-http/notification-client.js';
+export function createApiRouter(client:NotificationClient){const router=Router();router.use('/examples/notifications',createNotificationExampleRouter(client));return router;}
