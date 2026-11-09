@@ -79,11 +79,18 @@ describe('OpenAPI HTTP contract', () => {
         '503',
         '504',
       ]);
-      expect(
-        requestSchema.safeParse(
-          op.requestBody.content['application/json'].example,
-        ).success,
-      ).toBe(true);
+      const media = op.requestBody.content['application/json'];
+      expect(media).not.toHaveProperty('example');
+      expect(Object.keys(media.examples)).toEqual([
+        'full',
+        'minimal',
+        'message',
+      ]);
+      for (const example of Object.values(media.examples) as {
+        value: unknown;
+      }[]) {
+        expect(requestSchema.safeParse(example.value).success).toBe(true);
+      }
     }
     const webhook =
       document.paths['/api/v1/webhooks/rita-id/employee-profile'].post;
@@ -186,5 +193,66 @@ describe('Profile read OpenAPI contract', () => {
         .content['application/json'].schema.properties.data.properties.employees
         .items;
     expect(item.properties.employee).toEqual(employee);
+  });
+});
+
+describe('Notification example choices', () => {
+  it('documents all route-specific values, optional defaults and MESSAGE context', () => {
+    const document = JSON.parse(JSON.stringify(openApiDocument));
+    const choices = [
+      ['task-assigned', 'UPDATED', 'MEDIUM', 'Công việc mới', 'DEFAULT'],
+      ['task-commented', 'UPDATED', 'LOW', 'Bình luận mới', 'DEFAULT'],
+    ];
+    const ids = new Set<string>();
+    for (const [route, type, priority, label, status] of choices) {
+      const op =
+        document.paths['/api/v1/examples/notifications/' + route!].post;
+      const { full, minimal, message } =
+        op.requestBody.content['application/json'].examples;
+      expect(full.value.data).toMatchObject({
+        type,
+        priority,
+        custom_badge: { label, status },
+      });
+      expect(full.value.correlationId).toBeTruthy();
+      expect(full.value.data.actor).toMatch(/^[0-9a-f-]{36}$/);
+      expect(full.value.data.summary).toBeTruthy();
+      expect(minimal.value).not.toHaveProperty('correlationId');
+      for (const field of ['summary', 'type', 'priority', 'group', 'message'])
+        expect(minimal.value.data).not.toHaveProperty(field);
+      expect(minimal.value.data.actor).toBeNull();
+      expect(minimal.value.data.custom_badge).toBeNull();
+      expect(message.value.data).toMatchObject({
+        type: 'MESSAGE',
+        priority: 'MEDIUM',
+        group: { type: 'MULTIPLE' },
+      });
+      expect(message.value.data.message.sentAt).toBe(message.value.occurredAt);
+      expect(op.description).toContain('task.' + route);
+      expect(op.description).toContain('không phải dry-run');
+      for (const item of [full, minimal, message]) {
+        expect(item.description).toContain('409');
+        expect(ids.has(item.value.messageId)).toBe(false);
+        ids.add(item.value.messageId);
+      }
+      const properties =
+        op.requestBody.content['application/json'].schema.properties.data
+          .properties;
+      expect(properties.type.description).toContain('không trim/uppercase');
+      expect(properties.priority.description).toContain('không cam kết thứ tự');
+      expect(properties.custom_badge.description).toContain(
+        'custom_badge_status',
+      );
+    }
+    const file = JSON.parse(
+      readFileSync(
+        new URL('../examples/notification.json', import.meta.url),
+        'utf8',
+      ),
+    );
+    expect(file).toEqual(
+      document.paths['/api/v1/examples/notifications/task-assigned'].post
+        .requestBody.content['application/json'].examples.full.value,
+    );
   });
 });

@@ -1,3 +1,4 @@
+import { notificationExamples } from './notification-examples.js';
 import { Router } from 'express';
 import swaggerUi from 'swagger-ui-express';
 import { z } from 'zod';
@@ -85,6 +86,23 @@ if (dataSchema && typeof dataSchema === 'object')
       },
     ],
   });
+// Enrich documentation only; keep the generated validation schema unchanged.
+const fieldDescriptions = {
+  type: 'Phân loại notification, không phải routing key. WARNING/MESSAGE/REPORT/REMINDER/UPDATED/SYSTEM. Thiếu/null/chuỗi không hỗ trợ (kể cả BIRTHDAY) → SYSTEM tại Rita ID. So khớp chính xác, không trim/uppercase.',
+  priority:
+    'Mức ưu tiên trình bày, không cam kết thứ tự giao nhận. LOW/MEDIUM/HIGH/URGENT. Thiếu/null/chuỗi không hỗ trợ → MEDIUM tại Rita ID. So khớp chính xác, không trim/uppercase.',
+  custom_badge:
+    'Nhãn trình bày nghiệp vụ, không phải trạng thái xử lý hoặc delivery. Bắt buộc có mặt: null nghĩa không hiển thị, hoặc {label,status}. label được lưu vào custom_badge; status vào custom_badge_status. label không trắng, tối đa 100 ký tự. status bắt buộc: DEFAULT/SUCCESS/WARNING/DANGEROUS; null/chuỗi không hỗ trợ → DEFAULT. So khớp chính xác, không trim/uppercase.',
+  summary:
+    'Chuỗi không trắng, tối đa 2000 ký tự nếu gửi. Bỏ field để dùng template của route; null hoặc chuỗi trắng không phải cách chọn default.',
+};
+if (dataSchema && typeof dataSchema === 'object') {
+  for (const [field, description] of Object.entries(fieldDescriptions)) {
+    const property = dataSchema.properties?.[field];
+    if (property && typeof property === 'object')
+      Object.assign(property, { description });
+  }
+}
 export const openApiDocument = {
   openapi: '3.1.0',
   info: {
@@ -246,26 +264,15 @@ export const openApiDocument = {
           post: {
             operationId: 'notify_' + route.replaceAll('-', '_'),
             summary,
-            description:
-              'Caller supplies stable messageId/occurredAt. Retry the same request manually after unknown outcomes. Scenario/Project/source are server-owned. No automatic retry.',
+            description: `Scenario cố định: task.${route}. Caller không gửi scenario/Project/source. Bỏ field summary để dùng template: ${summary}; có thể gửi summary riêng không trắng. Chọn full để xem payload đầy đủ; đây không phải policy mặc định. Dùng Bearer DEMO_API_TOKEN, không dùng API key Rita ID trong Swagger. simulation:true vẫn gọi Rita ID thật, không phải dry-run. Accepted không có nghĩa người nhận đã đọc. Retry thủ công cùng messageId/occurredAt/nội dung; đổi mẫu với messageId đã accepted có thể trả 409. Không retry tự động.`,
             security: [{ demoBearer: [] }],
             requestBody: {
               required: true,
               content: {
                 'application/json': {
                   schema: inputSchema,
-                  example: {
-                    messageId: '11111111-1111-4111-8111-111111111111',
-                    occurredAt: '2026-11-07T00:00:00Z',
-                    data: {
-                      actor: null,
-                      recipientUserIds: [
-                        '22222222-2222-4222-8222-222222222222',
-                      ],
-                      title: 'Fictional demo',
-                      custom_badge: null,
-                    },
-                  },
+                  examples:
+                    notificationExamples[route as keyof typeof templates],
                 },
               },
             },

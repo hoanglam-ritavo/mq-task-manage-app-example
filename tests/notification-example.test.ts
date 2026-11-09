@@ -1,3 +1,4 @@
+import { openApiDocument } from '../src/modules/documentation/index.js';
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
 import { describe, it, expect, vi } from 'vitest';
@@ -235,4 +236,36 @@ describe('Notification HTTP demo', () => {
       .expect(200);
     expect(f.send.mock.calls[0]![0].data).toMatchObject(context);
   });
+});
+
+describe('Published Swagger requests through HTTP', () => {
+  const document = JSON.parse(JSON.stringify(openApiDocument));
+  for (const route of routes) {
+    const examples =
+      document.paths[base + route].post.requestBody.content['application/json']
+        .examples;
+    for (const name of ['full', 'minimal', 'message']) {
+      it(
+        route + ' forwards ' + name + ' without dropping caller fields',
+        async () => {
+          const f = fixture();
+          const body = structuredClone(examples[name].value);
+          await request(f.app)
+            .post(base + route)
+            .auth(token, { type: 'bearer' })
+            .send(body)
+            .expect(200);
+          expect(f.send).toHaveBeenCalledExactlyOnceWith({
+            ...body,
+            data: {
+              ...body.data,
+              scenario: 'task.' + route,
+              summary:
+                body.data.summary ?? templates[route as keyof typeof templates],
+            },
+          });
+        },
+      );
+    }
+  }
 });

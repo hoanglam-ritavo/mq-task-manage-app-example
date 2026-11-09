@@ -71,16 +71,32 @@ Các API demo yêu cầu Authorization: Bearer <DEMO_API_TOKEN> trước JSON va
 
 ```json
 {
-  "messageId": "11111111-1111-4111-8111-111111111111",
-  "occurredAt": "2026-11-07T00:00:00Z",
+  "messageId": "b0000000-0000-4000-8000-000000000001",
+  "occurredAt": "2026-11-09T03:00:00Z",
+  "correlationId": "task-demo-task-assigned",
   "data": {
-    "actor": null,
-    "recipientUserIds": ["22222222-2222-4222-8222-222222222222"],
-    "title": "Fictional notification",
-    "custom_badge": null
+    "actor": "11111111-1111-4111-8111-111111111111",
+    "recipientUserIds": [
+      "22222222-2222-4222-8222-222222222222"
+    ],
+    "title": "Công việc mới (minh họa)",
+    "summary": "Công việc mới: dữ liệu hư cấu để thử tích hợp.",
+    "type": "UPDATED",
+    "priority": "MEDIUM",
+    "custom_badge": {
+      "label": "Công việc mới",
+      "status": "DEFAULT"
+    }
   }
 }
 ```
+
+
+Swagger cung cấp ba mẫu cho mỗi endpoint: **Đầy đủ theo nghiệp vụ** (mặc định trong bộ chọn), **Dùng giá trị mặc định**, **Có ngữ cảnh hội thoại**. Mẫu đầy đủ ở trên dành cho task-assigned; giá trị type/priority/badge chỉ minh họa, không thay đổi default của route. Mẫu tối thiểu bỏ summary/type/priority/correlationId, actor và custom_badge là null: route thêm summary, Rita ID chuẩn hóa type=SYSTEM và priority=MEDIUM. MESSAGE cần cả group/message, scenario vẫn thuộc route.
+
+Type phân loại notification; priority biểu thị mức ưu tiên trình bày, không cam kết thứ tự giao nhận. Badge là nhãn nghiệp vụ: custom_badge.label lưu vào cột custom_badge, custom_badge.status lưu vào custom_badge_status; null không hiển thị badge. Enum so khớp chính xác, không trim/uppercase. Thiếu/null/chuỗi không hỗ trợ của type/priority thành SYSTEM/MEDIUM; badge.status null/chuỗi không hỗ trợ thành DEFAULT (field status vẫn bắt buộc khi badge là object).
+
+Thay actor/recipient bằng UUID Rita ID hợp lệ. Sự kiện mới cần messageId mới; retry cùng sự kiện giữ identity/nội dung/integration. Chuyển mẫu với messageId đã accepted có thể gây409. Swagger Authorize dùng DEMO_API_TOKEN, không phải Rita API key; simulation:true vẫn có thể tạo notification thật, không phải dry-run.
 
 Xem [file request hư cấu](examples/notification.json). Caller bắt buộc cấp messageId/occurredAt ổn định; tạo UUID mới cho sự kiện mới, giữ nguyên mọi nội dung khi retry cùng sự kiện. Giới hạn1–100 recipient UUID không trùng; giữ actor UUID/null, title, summary, badge và enum normalization tương ứng backend. MESSAGE bắt buộc group/message; loại khác cấm context. birthdayOccurrence bị cấm. Không gửi project_id, source, scenario, envelope type/schemaVersion; Project được Rita ID suy ra từ API key riêng của app.
 
@@ -121,6 +137,16 @@ npm run docs:check
 Tests dùng fixtures hư cấu, Supertest và HTTP client inject; không dotenv, personal JSON hoặc dịch vụ dùng chung. Golden signature có expected value tạo bởi signer backend với key hư cấu; tests không import runtime từ sibling. Không tuyên bố mocks chứng minh HTTPS public/TLS, DB, restart durability hoặc delivery thật.
 
 ## Current verification status
+
+### Swagger notification examples — 2026-11-09
+
+Verified against `e91f4f1` plus this documentation/example/test working tree. Every notification endpoint now offers full/minimal/message examples, full selected first. Full payloads explicitly show type/priority/badge; these are illustrative choices, not runtime defaults. The existing generated schema, auth, fallback, templates and error contracts are retained.
+
+- PASS: 60 tests across the focused documentation and notification HTTP suites; 0 failed/skipped. All published payloads validate and pass through the real HTTP router with an injected client double, preserving caller fields and adding only route scenario/summary as appropriate. Initial sandbox Vitest attempts failed with spawn EPERM; permitted subprocess runs passed.
+- PASS: typecheck, read-only ESLint, TypeScript build compilation and targeted Prettier checks for changed TypeScript/JSON. README format check still reports differences; the committed HEAD README also fails that check. Unrelated Markdown formatting is preserved.
+- PASS: local Chromium Swagger UI for every notification endpoint in this repo, within a five-endpoint Sale/Task check. All three options are available, full is selected initially, and every option matches the request editor payload. POST and external network access were blocked; no Execute request was sent. No application .env or real credentials were used.
+- PASS: docs checker covers 3 Markdown files, 28 links, 8 routes and 3 JSON examples. Mock HTTP/browser evidence does not prove live Rita persistence, delivery or database guarantees. No backend/portal/runtime policy change or migration is included.
+
 
 ### Profile RAM read API — 2026-11-09
 
