@@ -14,7 +14,8 @@
     "lint": "eslint .",
     "format:check": "prettier --check .",
     "format": "prettier --write .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "docs:check": "node scripts/check-docs.mjs"
   },
   "dependencies": {
     "dotenv": "^17.2.3",

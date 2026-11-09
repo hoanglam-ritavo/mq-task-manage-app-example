@@ -1,319 +1,122 @@
 # task-manage-app-example
 
-Example độc lập Express 5 + TypeScript ESM, Node.js 24, npm và custom RabbitMQ AMQP 0.9.1.
-App **nhận profile ở pipeline 1**, **phát notification ở pipeline 2**.
-Không có database/OAuth hoặc nghiệp vụ Task Manage thật; messaging mặc định tắt.
+Example độc lập Express 5, TypeScript ESM, Node.js 24 và npm. App nhận profile qua webhook có chữ ký và gửi notification tới API Expose của Rita ID. Không có database, OAuth login, UI, pipeline 3 hoặc nghiệp vụ Task thật.
 
-Đọc [kiến trúc và payload đầy đủ](ARCHITECTURE.md), [hướng dẫn bảo trì](AGENTS.md).
-Tài liệu liên hệ thống tùy chọn: [note backend](../rita-id-backend/docs/rabbitmq-business-pipelines.md);
-không cần sibling checkout để chạy HTTP của app này.
+Đọc [kiến trúc](ARCHITECTURE.md) và [hướng dẫn bảo trì](AGENTS.md). Backend là đối tác HTTP, không phải dependency source hoặc shared package. Contract được đối chiếu với backend trong workspace ngày 2026-11-09.
 
 ## Cài đặt và chạy
 
-Chạy từ thư mục repository:
+Chạy trong repository này:
 
 ```powershell
 npm ci
-if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+if (-not (Test-Path -LiteralPath .env)) { Copy-Item -LiteralPath .env.example -Destination .env }
 npm run dev
 ```
 
-Không ghi đè .env cá nhân. POSIX dùng `test -f .env || cp .env.example .env`.
-Có thể chạy không .env với mặc định; process env được ưu tiên hơn dotenv.
-Bản compile: `npm run build` rồi `npm start`.
-
-- [Health](http://localhost:4102/health): `{"status":"ok","service":"task-manage-app-example"}`.
-- [Swagger UI](http://localhost:4102/docs), [OpenAPI](http://localhost:4102/openapi.json): luôn bật cả production và broker offline.
-- Dùng port thực tế nếu đổi PORT. Health chỉ là HTTP liveness, không xác nhận broker ready.
-- Ctrl+C/SIGTERM drain HTTP và messaging; deadline HTTP 10 giây không cắt handler messaging.
+Giữ nguyên cấu hình cá nhân đang có. Health mặc định tại http://localhost:4102/health, Swagger UI tại http://localhost:4102/docs/ và spec tại http://localhost:4102/openapi.json. App không tự gọi backend khi createApp hoặc startup. Thiếu credential vẫn cho startup; endpoint liên quan trả sanitized503.
 
 ## Cấu hình
 
-Nguồn chính: [parser](src/config/env.ts), [.env.example](.env.example).
-Các biến integer RabbitMQ nhận chữ số, trong giới hạn dưới; boolean chỉ nhận true/false.
+Chỉ loadConfig đọc environment/dotenv; biến process đã có được ưu tiên. Không sửa .env để chạy tests.
 
-| Biến                        | Default        | Quy tắc                                                                 |
-| --------------------------- | -------------- | ----------------------------------------------------------------------- |
-| NODE_ENV                    | development    | development/test/production                                             |
-| PORT                        | 4102           | Integer 1–65535                                                         |
-| LOG_LEVEL                   | info           | fatal/error/warn/info/debug/trace/silent                                |
-| RABBITMQ_ENABLED            | false          | false không tạo connection/channel/timer                                |
-| RABBITMQ_HOST               | localhost      | DNS/IPv4/IPv6 không ngoặc; không scheme, port kèm, path hoặc whitespace |
-| RABBITMQ_PORT               | 5672 hoặc 5671 | 1–65535; TLS bật chọn 5671 khi thiếu; explicit port được giữ            |
-| RABBITMQ_USERNAME           | không có       | Bắt buộc khi enabled; nếu khai báo phải không trắng                     |
-| RABBITMQ_PASSWORD           | không có       | Như username, giữ nguyên bytes                                          |
-| RABBITMQ_VHOST              | /              | Tên nguyên bản không URL-encoded, không trắng                           |
-| RABBITMQ_TLS_ENABLED        | false          | Kiểm tra certificate mặc định Node; không bypass TLS                    |
-| RABBITMQ_PREFETCH           | 10             | 1–65535                                                                 |
-| RABBITMQ_PUBLISH_TIMEOUT_MS | 10000          | 1–2147483647                                                            |
-| RABBITMQ_MAX_IN_FLIGHT      | 100            | 1–10000                                                                 |
-| RABBITMQ_HEARTBEAT_SECONDS  | 30             | 1–65535                                                                 |
-| RABBITMQ_RECONNECT_SECONDS  | 5              | 1–86400                                                                 |
+| Biến                        | Mặc định / yêu cầu                                                                                  |
+| --------------------------- | --------------------------------------------------------------------------------------------------- |
+| NODE_ENV                    | development; development/test/production                                                            |
+| PORT                        | 4102; số nguyên1–65535                                                                              |
+| LOG_LEVEL                   | info; mức Pino hợp lệ                                                                               |
+| RITA_API_BASE_URL           | Tùy chọn, ví dụ https://id.example.test/api/; URL cố định phía server, không credentials/query/hash |
+| RITA_INTEGRATION_API_KEY    | Tùy chọn; rik_UUIDv4.64-hex-secret do Rita ID cấp; gửi chỉ bằng X-API-Key                           |
+| RITA_WEBHOOK_SIGNING_SECRET | Tùy chọn; whsec_ + base64 canonical32 byte; chỉ xác minh webhook                                    |
+| DEMO_API_TOKEN              | Tùy chọn;32–256 ký tự A–Z/a–z/0–9/_/-; Bearer token riêng cho API demo                              |
 
-Disabled cho phép thiếu credentials nhưng **các biến mới đã khai báo sai vẫn bị từ chối**, không bỏ qua toàn bộ như một số cấu hình backend.
-RABBITMQ_URL cũ không dùng runtime; enabled và URL không rỗng bị từ chối; disabled bỏ qua URL cũ.
-Credentials không trim/decode; vhost raw được adapter encode đúng một lần khi truyền object vào amqplib.
-RABBITMQ_TEST_URL chỉ dành cho suite broker disposable, không phải runtime URL.
-Config sai dừng startup; config đúng nhưng broker offline vẫn cho HTTP chạy.
+Giá trị đã khai báo phải hợp lệ, kể cả chuỗi rỗng. Backend URL chỉ cho HTTPS; HTTP chỉ cho localhost/127.0.0.1/[::1] trong development/test. Base path được giữ: https://id.example.test/api/ trở thành https://id.example.test/api/api-expose/notifications.
 
-## Broker local
+Ba credential có trách nhiệm khác nhau và phải riêng theo từng app/môi trường. Không đưa API key Rita ID vào Swagger Authorize hoặc browser. Có thể tạo token demo bằng Node crypto rồi tự lưu an toàn; không commit giá trị thật. Các setting transport cũ không còn được đọc.
 
-[Compose](compose.rabbitmq.yml) dùng RabbitMQ 4.3.6-management, localhost 5673/15673,
-vhost rita_test và named volume. Hai Compose Sale/Task là **hai lựa chọn thay thế**;
-chỉ chạy một, cả hai app kết nối broker đó.
+## Routes
 
-```sh
-docker compose -f compose.rabbitmq.yml up -d
-```
+| Method | Route                                           | Quyền / kết quả                               |
+| ------ | ----------------------------------------------- | --------------------------------------------- |
+| GET    | `/health`                                       | Liveness; không xác nhận integration sẵn sàng |
+| GET    | `/docs`                                         | Swagger, public; có thể redirect tới /docs/   |
+| GET    | `/openapi.json`                                 | OpenAPI3.1, public                            |
+| POST   | `/api/v1/webhooks/rita-id/employee-profile`     | Chữ ký webhook; áp dụng vào RAM               |
+| POST   | `/api/v1/examples/notifications/task-assigned`  | Bearer token demo; gọi Rita ID                |
+| POST   | `/api/v1/examples/notifications/task-commented` | Bearer token demo; gọi Rita ID                |
 
-Đây là lệnh vận hành local tùy chọn, không phải bước kiểm chứng tài liệu đã chạy.
-Cấu hình demo tương ứng (credential local công khai trong Compose, không dùng production):
+## Nhận profile
 
-```dotenv
-RABBITMQ_ENABLED=true
-RABBITMQ_HOST=127.0.0.1
-RABBITMQ_PORT=5673
-RABBITMQ_USERNAME=rita_local
-RABBITMQ_PASSWORD=LocalRabbitOnly123
-RABBITMQ_VHOST=rita_test
-RABBITMQ_TLS_ENABLED=false
-```
+Receiver đọc raw body tối đa256 KiB trước JSON parser chung. Cần webhook-id, webhook-timestamp và webhook-signature; header thiếu/trùng/sai hoặc chữ ký sai trả401 trước parse JSON. Timestamp Unix seconds phải nằm trong5 phút của server; đồng bộ clock. Không dùng occurredAt để đánh giá chữ ký vì event cũ có thể được retry.
 
-Một node không phải HA. Không xóa volume/restart broker dùng chung để thử tính năng.
-Production cần quyền vhost/exchange/queue và TLS riêng.
+Chữ ký là v1,<base64 HMAC-SHA256> trên id.timestamp.rawBody, dùng bytes base64 sau whsec_. webhook-id phải khớp messageId. Event phải có type outbound.sync.profile, schemaVersion1, source rita-id, revision bigint string và đúng một employee. Xem [payload hư cấu](examples/profile-event.json); không dùng contract batch/profile-read API cũ.
 
-## Pipeline 1 — nhận profile
+200 trả {messageId,status:applied|duplicate|stale}. Duplicate cùng ID/body không áp dụng lại; cùng ID khác body409. Revision thấp hơn bị bỏ qua, bằng nhau khác nội dung409, cao hơn cập nhật profile. Dùng BigInt, không Number. Invalid JSON/schema400, body quá lớn413; chưa cấu hình hoặc hết capacity503.
 
-Module [employee-profile](src/modules/employee-profile/index.ts) đăng ký trước start khi enabled.
-Queue app này: `task-manage-app-example.employee-profile`; exchange `rita.employee-profile.events`;
-routing/type `employee.profiles.changed`, version 1, source rita-id.
+Mỗi app instance có tối đa1.000 profiles/10.000 receipts trong RAM; không eviction. Kiểm tra trước thay đổi state. Duplicate đã biết vẫn được nhận khi đầy. Restart làm mất toàn bộ profile/revision/dedup; có thể nhận lại event cũ như mới. HTTP200 không bảo đảm lưu bền và không phù hợp dùng làm production receiver. Restart để dọn demo phải đi kèm hiểu biết về mất state, không phải recovery production. Không có API public đọc profile cá nhân.
 
-Backend ghi profile và outbox trong cùng transaction khi tạo employee lần đầu qua login hoặc khi login/cron thay đổi name, email, phoneNumber, avatar, active, employee_id hay departmentName. Chỉ đổi last_sync không phát. Event phản ánh profile đã commit, không chứng minh login đã hoàn tất thành công.
-Capture luôn hoạt động, độc lập RABBITMQ_ENABLED; false chỉ dừng transport và giữ backlog. HRM_SYNC_ENABLED chỉ điều khiển cron, không điều khiển login capture hoặc dispatcher.
-Không có endpoint HTTP tại example để kích hoạt pipeline 1.
+## Gửi notification
 
-Envelope hư cấu hợp lệ:
+Các API demo yêu cầu Authorization: Bearer <DEMO_API_TOKEN> trước JSON validation. Thiếu/sai token401, chưa cấu hình token503. Route quyết định scenario task.<route>; summary thiếu dùng template. Request mẫu:
 
 ```json
 {
   "messageId": "11111111-1111-4111-8111-111111111111",
-  "type": "employee.profiles.changed",
-  "schemaVersion": 1,
-  "source": "rita-id",
-  "occurredAt": "2026-10-30T00:00:00.000Z",
+  "occurredAt": "2026-11-07T00:00:00Z",
   "data": {
-    "syncRunId": "33333333-3333-4333-8333-333333333333",
-    "employees": [
-      {
-        "_id": "22222222-2222-4222-8222-222222222222",
-        "name": "Demo Employee",
-        "email": "demo@example.invalid",
-        "employee_id": "EMP-DEMO-001",
-        "phone_number": null,
-        "active": true,
-        "is_developer": false,
-        "groups": "EMPLOYEE",
-        "avatar": null,
-        "position": {
-          "text": null,
-          "parser": {
-            "group": "",
-            "company": "",
-            "department": "",
-            "board": "",
-            "region": "",
-            "store": "",
-            "warehouse": "",
-            "factory": "",
-            "workshop": "",
-            "showroom": "",
-            "center": "",
-            "cafe": "",
-            "others": []
-          }
-        }
-      }
-    ]
+    "actor": null,
+    "recipientUserIds": ["22222222-2222-4222-8222-222222222222"],
+    "title": "Fictional notification",
+    "custom_badge": null
   }
 }
 ```
 
-Consumer validate rồi `console.log(message.data)`: output là syncRunId và employees, không phải toàn envelope.
-Không lưu DB/profile, không có inbox dedup hoặc kiểm soát revision, không tự backfill/resync hay gọi backend.
-Hai queue riêng giúp cả Sale và Task nhận bản sao; workers cùng queue chia việc.
-Backend commit profile + outbox → dispatcher publish → broker confirm → consumer validate/log → ACK. Lỗi ghi outbox rollback transaction profile; broker offline giữ backlog đã lưu. Dispatcher đánh dấu SENT sau confirm không bị mandatory return, không phải xác nhận mọi external đã xử lý. Log có thể trùng; queue mới không tự nhận lịch sử.
-Xem [interfaces và validation](ARCHITECTURE.md#pipeline-1--contract-dữ-liệu-nhận).
+Xem [file request hư cấu](examples/notification.json). Caller bắt buộc cấp messageId/occurredAt ổn định; tạo UUID mới cho sự kiện mới, giữ nguyên mọi nội dung khi retry cùng sự kiện. Giới hạn1–100 recipient UUID không trùng; giữ actor UUID/null, title, summary, badge và enum normalization tương ứng backend. MESSAGE bắt buộc group/message; loại khác cấm context. birthdayOccurrence bị cấm. Không gửi project_id, source, scenario, envelope type/schemaVersion; Project được Rita ID suy ra từ API key riêng của app.
 
-### Vận hành và phục hồi pipeline 1
+App gửi đúng wrapper qua POST /api-expose/notifications với X-API-Key phía server. Timeout10 giây, không redirect/retry tự động, không queue hoặc buffer retry. Chỉ backend200 với đúng messageId và status accepted mới trả200 {messageId,status:accepted,simulation:true}. Accepted là transaction Rita ID đã commit, có thể bị preferences ngăn tạo inbox; không phải người nhận đã đọc hay hoàn tất nghiệp vụ.
 
-1. Dùng cùng broker/vhost cho Backend, Sale và Task. Khởi động hai consumer enabled để provision cả hai queue/binding trước khi Backend dispatch; Backend không tạo queue đích.
-2. Trong RabbitMQ Management (Compose local: http://localhost:15673), chọn đúng vhost, kiểm tra exchange rita.employee-profile.events có binding employee.profiles.changed tới cả hai queue ở bảng contract. Kiểm tra consumer count, Ready/Unacked và các queue retry/dead. Broker connected hoặc HTTP /health không đủ chứng minh subscription ready. getStatus() chỉ là API helper trong code, chưa có endpoint/CLI công khai.
-3. Sau khi Backend có schema hợp lệ, chỉ chạy một process Backend. Login tạo/cập nhật profile hoặc cron enabled có thể capture; không cần bật cron để login capture/dispatcher hoạt động. Dùng dữ liệu hư cấu trong môi trường cô lập, không chạy live cron để nghiệm thu tài liệu.
-4. Theo dõi log outbox Backend (pending, parked, oldest pending age) và backlog/consumer/DLQ từng queue. Chưa có hệ thống cảnh báo hoặc replay tự động được cài đặt bởi example.
+Backend400/409/413/503 được ánh xạ bằng mã lỗi kiểm soát. Upstream401 thành502 RITA_CREDENTIAL_REJECTED để phân biệt Bearer token demo sai. Timeout504; network, redirect hoặc success response sai thành502 RITA_OUTCOME_UNKNOWN. Khi chưa chắc chắn, retry thủ công cùng identity/nội dung. Không có outbox bền vững ở example; caller chịu trách nhiệm lưu request cần retry. Không tự gửi lại hoặc đổi key/integration để né collision vì dedup ở Rita ID có namespace theo integration.
 
-| Chặng              | Kiểm tra và ý nghĩa                                                                                                                                                              |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Chưa capture       | Kiểm tra user EMPLOYEE internal, thay đổi trường được theo dõi hoặc tạo lần đầu, transaction và freshness snapshot. Chỉ last_sync đổi không có event; cron không tạo user mới.   |
-| Outbox PENDING     | Kiểm tra transport enabled, kết nối/backpressure và lịch retry. Publisher retry exponential backoff với jitter, ban đầu 500–1000 ms, tối đa 300 giây; giữ ID/payload.            |
-| Outbox PARKED      | UNROUTABLE hoặc lỗi envelope/topology cần sửa nguyên nhân rồi dùng retry CLI Backend. Revision sau của cùng employee bị chặn, employee khác tiếp tục.                            |
-| Routing/queue      | Kiểm tra đúng vhost/exchange và cả hai bindings. Confirm không chứng minh mọi subscriber đã nhận.                                                                                |
-| Consumer/retry/DLQ | Handler thành công mới ACK. Invalid JSON/envelope/payload vào DLQ; lỗi handler tạm thời retry 10/60/300 giây rồi DLQ. Retry quay về đúng queue, không broadcast lại cho app kia. |
+## Setup hai chiều với Rita ID
 
-Consumer offline nhưng queue durable/binding còn tồn tại có thể nhận backlog khi chạy lại. Queue chưa tồn tại hoặc bị xóa không giữ lịch sử cho app đó; queue Sale còn tồn tại vẫn có thể khiến Backend nhận confirm dù Task bỏ lỡ event. SENT ở Backend không chứng minh external đã xử lý; log thành công ở example cũng không phải ghi database.
+1. Provision backend schema tương thích, cấu hình backend WEBHOOK_ENABLED và chạy đúng một backend process theo runbook backend. Không chạy provisioning từ example.
+2. Tạo Project và API integration riêng cho app, lưu key một lần rồi enable. Đặt API URL/key phía server example.
+3. Tạo webhook thuộc Project tương ứng, URL HTTPS public trỏ đúng route receiver, subscription outbound.sync.profile; lưu signing secret vào example trước khi active webhook.
+4. Localhost/private IP không được backend webhook transport chấp nhận. Dùng reverse proxy/tunnel HTTPS có TLS hợp lệ, DNS public và forward nguyên bytes/body/headers; không nới SSRF/TLS policy backend. Tránh proxy parse/re-serialize body hoặc biến đổi encoding.
+5. Bảo vệ Bearer token demo kể cả khi tunnel public toàn bộ app. Không công khai môi trường demo cho người không được phép; Swagger không cung cấp API key/signing secret. Xoay key/secret/token bằng quy trình riêng, khởi động lại example để nạp cấu hình.
+6. WEBHOOK_ENABLED mặc định false ở backend; bật có chủ ý. Enable webhook không tự bootstrap/backfill profile lịch sử. Backfill/đối soát thuộc công cụ backend, không tự replay từ example.
 
-Backfill/retry do người vận hành Backend thực hiện theo [runbook outbox](../rita-id-backend/docs/employee-profile-outbox.md#maintenance-commands), **chỉ khi Backend đã dừng hoàn toàn**. Giữ run UUID khi resume backfill và message ID/payload khi retry parked. Backfill phát trạng thái internal hiện tại qua exchange chung cho các queue đang bind; không đọc lại HRM, không phát lịch sử đầy đủ và không phải resync riêng một consumer. CLI retry parked không replay DLQ consumer. Không sửa tay payload/revision, đánh dấu SENT hoặc xóa backlog để xử lý sự cố.
+## Lifecycle và kiểm chứng
 
-Cấp quyền broker phù hợp cho consumer provision/read queue và forwarding retry/DLQ; source trong JSON không xác thực producer. Không dùng credential demo làm ranh giới tin cậy. Profile log chứa dữ liệu cá nhân, chỉ dùng dữ liệu hư cấu; logging và retention production cần công việc riêng. Không dùng queue name của app khác cho một service mới vì workers cùng queue chia việc.
+Shutdown idempotent: ngừng nhận HTTP, drain client work. Deadline HTTP10 giây đóng socket và đặt exit code lỗi, nhưng vẫn chờ client thực sự kết thúc. Timeout/disconnect không chứng minh request chưa được backend xử lý. Không log payload, credentials, raw upstream response hoặc exception; chỉ metadata kiểm soát.
 
-## Pipeline 2 — gửi notification
-
-POST dưới `/api/v1/examples/notifications`; app này có 2 endpoint:
-
-| Endpoint sau prefix | Scenario            | Summary mặc định                               |
-| ------------------- | ------------------- | ---------------------------------------------- |
-| /task-assigned      | task.task-assigned  | Người quản lý đã tạo và giao task demo cho bạn |
-| /task-commented     | task.task-commented | Nguyễn Văn A đã bình luận trong task của bạn   |
-
-Request mẫu cho từng endpoint, dùng UUID hư cấu (không chứng minh bản ghi tồn tại):
-
-POST /api/v1/examples/notifications/task-assigned
-
-```json
-{
-  "actor": null,
-  "recipientUserIds": ["22222222-2222-4222-8222-222222222222"],
-  "project_id": "33333333-3333-4333-8333-333333333333",
-  "title": "Người quản lý đã tạo và giao task demo cho bạn",
-  "custom_badge": null
-}
+```sh
+npm run typecheck
+npm run lint
+npm run format:check
+npm run build
+npm test -- --maxWorkers=1 --no-file-parallelism
+npm run docs:check
 ```
 
-POST /api/v1/examples/notifications/task-commented
-
-```json
-{
-  "actor": null,
-  "recipientUserIds": ["22222222-2222-4222-8222-222222222222"],
-  "project_id": "33333333-3333-4333-8333-333333333333",
-  "title": "Nguyễn Văn A đã bình luận trong task của bạn",
-  "custom_badge": null
-}
-```
-
-Title bắt buộc; summary thiếu dùng template trong bảng. Actor và custom_badge bắt buộc nhưng cho phép null.
-Recipient 1–100 UUID không trùng kể cả casing; project_id là Project UUID Rita ID.
-Xem [HTTP request và wire contract](ARCHITECTURE.md#pipeline-2--contract-dữ-liệu-gửi) để biết toàn bộ field/giới hạn.
-Producer tự thêm scenario/source/version/messageId/occurredAt; không truyền chúng qua HTTP body.
-
-### Thử bằng Swagger
-
-1. Với demo toàn luồng, cấu hình cùng broker/vhost, khởi động Rita ID và chờ queue notification ready.
-2. Mở /docs, chọn endpoint và example, bấm **Try it out**, sửa body rồi **Execute**.
-3. Có bốn nhóm examples: đầy đủ; actor/badge null và summary mặc định; enum chưa hỗ trợ; BIRTHDAY.
-4. Producer gửi nguyên enum string. Rita ID giữ WARNING/MESSAGE/REPORT/REMINDER/UPDATED/SYSTEM;
-   BIRTHDAY dành nội bộ hoặc chuỗi ngoài allowlist → SYSTEM. Priority fallback MEDIUM, badge.status fallback DEFAULT.
-5. Không trim/uppercase; sai kiểu bị validation từ chối. Không tự resend sau kết quả chưa xác định.
-
-API chưa có auth, không tạo đơn hàng/task thật. Rita ID có persistence đang phát triển,
-consumer v3 lưu notification/recipients và receipt trong cùng transaction; chưa kiểm chứng DB/broker thật. **Dùng dữ liệu và DB/broker cô lập**.
-Có thể dán body từ [generator backend](../rita-id-backend/src/mock/README.md) vào Swagger;
-runtime không đọc JSON cá nhân/backend. Chi tiết backend trong note liên hệ thống, không phải dependency chạy app.
-
-### Response HTTP
-
-| HTTP | Body/ý nghĩa                                                                                        |
-| ---- | --------------------------------------------------------------------------------------------------- |
-| 202  | {messageId,status:"broker-confirmed",simulation:true}; chỉ confirm, không chứng minh backend đã lưu |
-| 400  | {error:{code,message}}; INVALID_NOTIFICATION_REQUEST hoặc INVALID_JSON; không publish               |
-| 413  | {error:{code:"PAYLOAD_TOO_LARGE",message}}; body vượt 1 MiB                                         |
-| 503  | {messageId,error:{code,message}}; transport unavailable/rejected                                    |
-| 504  | {messageId,error:{code:"DELIVERY_UNCERTAIN",message}}; message có thể đã gửi                        |
-
-503 gồm DISABLED, UNAVAILABLE, BLOCKED, BACKPRESSURE, IN_FLIGHT_LIMIT, STOPPING, UNROUTABLE, NACKED hoặc PUBLISH_FAILED.
-Không có publisher inject → UNAVAILABLE. messageId chỉ có sau khi request hợp lệ và envelope được tạo.
-202 không xác nhận consumer đã nhận/log/commit; request gọi lại tạo ID mới và có thể trùng nghiệp vụ.
-HTTP errors sanitized tiếng Anh; middleware chung còn có 404 NOT_FOUND và 500 INTERNAL_SERVER_ERROR.
-
-## Troubleshooting
-
-| Hiện tượng                    | Kiểm tra                                                                                             |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------- |
-| HTTP hoạt động nhưng POST 503 | enabled, config, broker, blocked/backpressure và helper status; health không kiểm broker             |
-| UNROUTABLE                    | Rita ID queue/binding đã ready, đúng exchange/routing/vhost; confirm không chứng minh mọi subscriber |
-| 400                           | Field bắt buộc, strict root/badge, UUID, recipients trùng, title/summary trắng, độ dài               |
-| 504                           | Kết quả chưa xác định; không tự kết luận chưa gửi hoặc gọi lại mù quáng                              |
-| Không có log profile          | Kiểm tra từng chặng trong phần Vận hành và phục hồi pipeline 1; login hoặc cron có thể capture       |
-| Không thấy notification ở UI  | Producer confirm không chứng minh persistence/UI; xem giới hạn backend                               |
-
-## Cấu trúc và thêm module
-
-[source map và lifecycle](ARCHITECTURE.md#runtime-và-trách-nhiệm) mô tả app/server/config/routes/modules/helper/shutdown.
-Nghiệp vụ thuộc src/modules, transport thuộc helper. createApp nhận publisher tối thiểu để tests dùng doubles.
-ESM imports dùng .js. Không thêm persistence/auth/command nếu chưa thuộc phạm vi.
-Pipeline 3 triển khai sau; fixture transport không phải business runtime.
-
-## Lệnh kiểm tra
-
-| Lệnh                  | Mục đích                           |
-| --------------------- | ---------------------------------- |
-| npm run dev           | tsx watch                          |
-| npm run build         | Xóa dist bằng Node API rồi compile |
-| npm start             | Chạy dist/server.js                |
-| npm run typecheck     | Kiểm tra source/tests              |
-| npm run lint          | ESLint read-only                   |
-| npm run format:check  | Prettier read-only                 |
-| npm run format        | Sửa định dạng                      |
-| npm test              | Vitest                             |
-| npm run test:rabbitmq | Suite broker opt-in                |
-
-[Broker suite](tests/rabbitmq-broker.test.ts) chỉ nhận RABBITMQ_TEST_URL từ process, không dotenv,
-vhost/storage disposable tường minh, tạo UUID resources và cleanup finally. Thiếu URL báo skipped.
-Không coi fixture transport là bằng chứng business pipeline toàn hệ sinh thái.
-Xem [chọn tests theo rủi ro](AGENTS.md#chọn-kiểm-chứng-theo-rủi-ro); docs-only không cần build/full Vitest.
-Mỗi app có dependencies/lockfile riêng, không cần backend chạy để kiểm HTTP với publisher double.
-
-## Pipeline 2 v3 — group/message preview (31/10/2026)
-
-Năm endpoint và response không đổi; notification envelope dùng schemaVersion **3**. Rita ID consumer v3 từ chối v2 vào DLQ, không tự replay. Schema backend phải được nâng trước code, sau đó chờ subscriptions ready và mới dùng producers v3. Pipeline 1 giữ version 1.
-
-Request type MESSAGE bắt buộc thêm hai object strict; type khác (kể cả BIRTHDAY được fallback SYSTEM) cấm group/message:
-
-```json
-{
-  "actor": null,
-  "recipientUserIds": ["22222222-2222-4222-8222-222222222222"],
-  "project_id": "33333333-3333-4333-8333-333333333333",
-  "title": "Bình luận demo",
-  "type": "MESSAGE",
-  "custom_badge": null,
-  "group": {
-    "key": "demo:thread",
-    "type": "MULTIPLE",
-    "name": "Demo conversation"
-  },
-  "message": {
-    "id": "demo:comment",
-    "text": "Nội dung hư cấu",
-    "sentAt": "2026-10-31T00:00:00Z"
-  }
-}
-```
-
-Dán vào endpoint hỗ trợ khách hàng hoặc bình luận task tương ứng; summary thiếu dùng template endpoint. Swagger thêm example **message** bên cạnh full/system/fallback/birthday. Key/message.id không trắng ≤200, group.name null hoặc không trắng ≤200; message.text plain text không trắng ≤2.000; sentAt là ISO UTC hợp lệ. Source/project scope định danh group, không chứng minh quyền. Không nhúng dữ liệu cá nhân vào Swagger.
-
-Backend tra actor/recipients/project tồn tại và chưa soft-delete trong transaction; thiếu bất kỳ identity nào sẽ DLQ toàn message. 202 chỉ là broker confirm, không phải commit. Receipt dedup theo source/branch/messageId; gọi HTTP lần nữa tạo ID mới nên không được chống trùng giữa hai request khác nhau. MESSAGE lưu snapshot riêng mỗi notification, không làm chat history. Setting internal backend độc lập với project settings, không thay đổi request external của app này.
-
-Credential Sale/Task chỉ được write exchange external, không được write/configure exchange internal của Rita ID. Cùng credential local chỉ là demo, không tạo ranh giới tin cậy. Chưa có auth ở các API demo, không có producer outbox; 504 có thể đã gửi, không tự resend. Chỉ dùng DB/broker demo cô lập.
+Tests dùng fixtures hư cấu, Supertest và HTTP client inject; không dotenv, personal JSON hoặc dịch vụ dùng chung. Golden signature có expected value tạo bởi signer backend với key hư cấu; tests không import runtime từ sibling. Không tuyên bố mocks chứng minh HTTPS public/TLS, DB, restart durability hoặc delivery thật.
 
 ## Current verification status
 
-### 02/11/2026 — tài liệu profile sync liên hệ thống
+### HTTP migration — 2026-11-09
 
-Đối chiếu revision `be9b214` cùng working tree chỉ sửa README/ARCHITECTURE. Trigger login/cron, outbox, contract v1 và troubleshooting đã đối chiếu source Backend và consumer; không đổi runtime/payload.
+Source tại 6f82f99 cộng working tree hoàn thiện migration HTTP, tài liệu và formatting ngày2026-11-09.
 
-- Kiểm tra tổng hợp hai examples: **60 liên kết/anchors**, **34 tham chiếu npm run** hợp lệ; **4 lượt validation** (hai JSON profile mẫu qua cả hai validator thuần) passed. JSON mẫu còn lại parse được; số đếm là chung, không cộng lại giữa hai repo.
-- Prettier read-only README/ARCHITECTURE: passed sau khi căn bảng liên quan; giữ nội dung ngoài phạm vi. git diff --check passed.
-- Kiểm tra bằng script đọc trực tiếp, không thêm test/tool vào repo. Không chạy build/full Vitest, ứng dụng, broker, DB, backfill hoặc migration. Đây là kiểm chứng tài liệu/validator, không chứng minh delivery hoặc persistence. Script outbox:contract:test phía Backend còn hardcode tên sibling cũ; xem runbook, không sửa script trong đợt tài liệu này.
+- PASS: typecheck, read-only ESLint, format:check và build. Các phát hiện formatting/import test trong vòng triển khai đã được sửa; gate cuối không còn lỗi.
+- PASS: full Vitest **122 tests /7 files,0 failed,0 skipped**, chạy với maxWorkers=1 và no-file-parallelism để giới hạn tài nguyên; không thay runner config hoặc hạ assertions. Bao phủ webhook raw-body signature/timestamp/header duplicates, exact256 KiB, revision bigint/dedup/conflicts/capacity/concurrency, notification scenarios/validation/authentication, HTTP serialization/outcome/timeout/no retry, shutdown và Swagger/JSON examples.
+- PASS: docs:check kiểm3 Markdown files,26 links,6 routes và3 JSON examples. Final verification prose nhận một lượt checker/format follow-up riêng. Diff whitespace được kiểm tra trước khi kết thúc.
+- Tests dùng Supertest, fixtures hư cấu và injected fetch; golden signature đối chiếu signer backend với key hư cấu, không import source sibling khi chạy tests. Không startup app với backend/public HTTPS/DB thật, không chứng minh public DNS/TLS, persistence/restart durability hoặc OS-level production shutdown.
+- Không sửa .env cá nhân, backend, portal hoặc mobile. Không thêm database, OAuth, pipeline3, dependencies/runtime package chung hoặc automatic retries. RAM được reset khi process restart; profile/dedup/revision không bền vững. Trước khi dùng production cần receiver storage bền vững và kiểm chứng isolated HTTPS/backend riêng.
+
+## Lịch sử kiểm chứng
+
+Các snapshot hỗn hợp sau giữ số liệu gốc. Transport/contracts trong đó đã retired, không phải hướng dẫn hiện hành hay bằng chứng kiểm chứng lại. Các ghi chú/config/Compose/tests chỉ dành cho transport cũ đã được gỡ.
 
 ### 31/10/2026 — notification v3 working tree
 
@@ -324,13 +127,7 @@ PASS: 46 liên kết tương đối/anchors; JSON examples được kiểm tra v
 
 Chỉ kiểm tra tài liệu và import validator thuần; không chạy build, full Vitest, HTTP server, browser, broker hoặc database. Không suy ra delivery/persistence từ các kiểm tra này. Lịch sử tests phía dưới không phải kết quả chạy lại trong đợt này.
 
-## Lịch sử kiểm chứng
-
-Các snapshot dưới đây giữ nguyên kết quả và anchor lịch sử. Hành vi/hướng dẫn cũ trong snapshot
-chỉ mô tả thời điểm ghi, không thay phần hướng dẫn hiện hành phía trên.
-Không diễn giải test từng pass là bằng chứng broker/database đang hoạt động.
-
-## Kết quả kiểm chứng — 2026-10-28
+### Kết quả kiểm chứng — 2026-10-28
 
 Kiểm chứng trên working tree khởi tạo template, Windows, Node 24.21.0 / npm 11.19.0:
 
@@ -346,39 +143,6 @@ Kiểm chứng trên working tree khởi tạo template, Windows, Node 24.21.0 /
 Trong sandbox Windows, npm install cần truy cập registry và Vitest cần quyền tạo
 tiến trình con; các lần chạy được cấp quyền đã hoàn tất.
 
-## RabbitMQ verification — 2026-10-28
-
-Executed against the local RabbitMQ implementation working tree (these example
-folders have no Git repository/revision), Windows, Node 24.21.0:
-
-- npm install: lockfile updated independently; 0 vulnerabilities reported.
-- npm run typecheck, npm run lint, npm run format:check and npm run build: passed.
-- npm test: 6 suites passed, 1 skipped; 58 tests passed, 5 skipped, 0 failed per app.
-- Tests cover HTTP availability with an unreachable loopback broker, shutdown beyond
-  the HTTP deadline, transport failures and three-system routing using a broker double.
-- The 5 real-broker cases were skipped because RABBITMQ_TEST_URL was absent.
-  Docker CLI was unavailable. Image pull, Compose startup, real quorum TTL/DLX,
-  confirms/redelivery and reconnect remain unverified against a real broker.
-- No actual Rita ID integration, database operations or business handlers were executed.
-  Mocks are not evidence of broker durability or database transaction safety.
-
-## Split RabbitMQ configuration verification - 2026-10-28
-
-Executed on the local split-env working tree (no Git revision for this example).
-Typecheck, read-only ESLint, format check and build passed. Vitest: 6 suites passed,
-1 skipped; **87 tests passed, 5 skipped, 0 failed** per app. Regressions cover TLS
-port selection, obsolete URL rejection, raw credentials/Unicode vhost, object
-connection options, disabled/offline HTTP and existing messaging lifecycle.
-
-RABBITMQ_TEST_URL remains test-only. Docker CLI and test URL were unavailable;
-real broker connection, TLS handshake and quorum behavior were not verified.
-No .env, Compose credentials, dependencies, business handlers or broker topology
-were modified in this change. Previous verification snapshots above remain historical.
-
-### Previous v1 verification
-
-Verification 2026-10-29, notification-example working tree: typecheck, lint, build and format:check passed (initial new-module formatting issue corrected). Vitest: **126 passed, 5 broker cases skipped**. Pipeline 1, HTTP health and lifecycle tests are included. Cross-app harness module import/clean-exit smoke passed without connections; actual RabbitMQ delivery/TLS and database integration remain unverified.
-
 ### Swagger verification — 2026-10-29
 
 Working tree trên revision 8ae62c3; giữ nguyên các snapshot kiểm chứng trước đó.
@@ -393,41 +157,3 @@ Scope: module docs, metadata schema, wiring Express, dependencies và tests.
 - Chưa kiểm chứng tương tác Try it out trên trình duyệt: môi trường không có
   browser automation được cấu hình. HTTP/assets tests không thay thế browser smoke test.
 - Không chạy broker/DB thật, không sửa backend hoặc .env cá nhân.
-
-### Các mốc kiểm chứng pipeline được giữ lại
-
-Verification 2026-10-29, employee-profile working tree: typecheck, lint,
-format:check, build passed; Vitest **98 passed, 5 broker tests skipped** per app.
-The cross-app broker case is skipped without RABBITMQ_TEST_URL. Consumer-module
-import/clean-exit smoke passed without external connections. No actual broker,
-TLS, PostgreSQL locking/rollback or real HRM integration was verified.
-
-Verification 2026-10-29, v2 working tree: typecheck, lint, format check, build passed; Vitest **137 passed, 5 broker cases skipped**. Actual broker/TLS/database behavior remains unverified. No personal payload generation was performed without explicit selected UUIDs.
-
-Verification: typecheck, lint, format check, build và Vitest PASS; 143 tests passed, 5 broker cases skipped vì không có URL disposable. HTTP tests xác nhận cả bốn Swagger examples, bao gồm BIRTHDAY được gửi nguyên bản. Dữ liệu tests hư cấu; không chạy broker/DB hoặc browser thật. Publisher doubles không chứng minh delivery hay persistence. Các kết quả cũ phía trên được giữ như lịch sử.
-
-### Liên kết cũ
-
-Các anchor dưới đây giữ liên kết cũ; xem hướng dẫn hiện hành ở các phần phía trên.
-
-<a id="rabbitmq-foundation"></a>
-
-<a id="configuration"></a>
-
-<a id="api-example"></a>
-
-<a id="reliability-and-lifecycle"></a>
-
-<a id="disposable-broker-tests"></a>
-
-<a id="employee-profile-pipeline-example-2026-10-29"></a>
-
-<a id="notification-pipeline-example-v2-2026-10-29"></a>
-
-<a id="generate-local-request-bodies"></a>
-
-<a id="rollout-and-validation"></a>
-
-<a id="swagger-ui--pipeline-2-v2"></a>
-
-<a id="external-notification-types--2026-10-30"></a>

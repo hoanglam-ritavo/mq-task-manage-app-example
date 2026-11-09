@@ -1,19 +1,203 @@
-
 import { Router } from 'express';
 import swaggerUi from 'swagger-ui-express';
 import { z } from 'zod';
-import { requestSchema,templates } from '../notification-example/index.js';
+import { requestSchema, templates } from '../notification-example/index.js';
 import { profileEnvelope } from '../employee-profile/webhook.js';
-const service='task-manage-app-example';
-const response=(description:string,schema:unknown)=>({description,content:{'application/json':{schema}}});
-const errorSchema={type:'object',properties:{messageId:{type:'string',format:'uuid'},error:{type:'object',required:['code','message'],properties:{code:{type:'string'},message:{type:'string'}}}},required:['error']};
-const errors=(codes:number[])=>Object.fromEntries(codes.map(code=>[String(code),response('Controlled error. No upstream body or credentials.',errorSchema)]));
-const inputSchema=z.toJSONSchema(requestSchema,{unrepresentable:'any'});
-const dataSchema=inputSchema.properties?.data;
-if(dataSchema&&typeof dataSchema==='object')Object.assign(dataSchema,{allOf:[{if:{properties:{type:{const:'MESSAGE'}},required:['type']},then:{required:['group','message']},else:{not:{anyOf:[{required:['group']},{required:['message']}]}}}]});
-export const openApiDocument={openapi:'3.1.0',info:{title:service,version:'0.2.0',description:'RAM-only HTTP demo. Restart loses profiles/revisions/receipts. No OAuth or durable delivery.'},components:{securitySchemes:{demoBearer:{type:'http',scheme:'bearer',description:'Separate DEMO_API_TOKEN, never the Rita API key.'},webhookSignature:{type:'apiKey',in:'header',name:'webhook-signature',description:'v1,<base64 HMAC-SHA256>; signed over id.timestamp.rawBody using the decoded whsec_ secret.'}}},paths:{
- '/health':{get:{operationId:'health',responses:{'200':response('HTTP liveness only; integrations may be unconfigured.',{type:'object',required:['status','service'],properties:{status:{const:'ok'},service:{const:service}}})}}},
- '/api/v1/webhooks/rita-id/employee-profile':{post:{operationId:'receiveEmployeeProfile',summary:'Apply signed profile to RAM only',description:'Raw body max256 KiB. Timestamp within5 minutes. Exactly one employee; bigint revision string. Response does not promise durable storage. No demo Bearer token required.',security:[{webhookSignature:[]}],parameters:[{name:'webhook-id',in:'header',required:true,schema:{type:'string',format:'uuid'}},{name:'webhook-timestamp',in:'header',required:true,schema:{type:'string',pattern:'^\\d{1,12}$'}}],requestBody:{required:true,content:{'application/json':{schema:z.toJSONSchema(profileEnvelope,{unrepresentable:'any'})}}},responses:{'200':response('Applied, duplicate or stale in this process only.',{type:'object',additionalProperties:false,required:['messageId','status'],properties:{messageId:{type:'string',format:'uuid'},status:{enum:['applied','duplicate','stale']}}}),...errors([400,401,409,413,503])}}},
- ...Object.fromEntries(Object.entries(templates).map(([route,summary])=>['/api/v1/examples/notifications/'+route,{post:{operationId:'notify_'+route.replaceAll('-','_'),summary,description:'Caller supplies stable messageId/occurredAt. Retry the same request manually after unknown outcomes. Scenario/Project/source are server-owned. No automatic retry.',security:[{demoBearer:[]}],requestBody:{required:true,content:{'application/json':{schema:inputSchema,example:{messageId:'11111111-1111-4111-8111-111111111111',occurredAt:'2026-11-07T00:00:00Z',data:{actor:null,recipientUserIds:['22222222-2222-4222-8222-222222222222'],title:'Fictional demo',custom_badge:null}}}}},responses:{'200':response('Rita accepted after its persistence commit; not user read.',{type:'object',additionalProperties:false,required:['messageId','status','simulation'],properties:{messageId:{type:'string',format:'uuid'},status:{const:'accepted'},simulation:{const:true}}}),...errors([400,401,409,413,502,503,504])}}}]))
-}};
-export function createDocumentationRouter(){const router=Router();router.get('/openapi.json',(_req,res)=>res.json(openApiDocument));router.use('/docs',swaggerUi.serve,swaggerUi.setup(undefined,{swaggerOptions:{url:'/openapi.json',validatorUrl:null,supportedSubmitMethods:['get','post']},customSiteTitle:service+' API docs'}));return router;}
+const service = 'task-manage-app-example';
+const response = (description: string, schema: unknown) => ({
+  description,
+  content: { 'application/json': { schema } },
+});
+const errorSchema = {
+  type: 'object',
+  properties: {
+    messageId: { type: 'string', format: 'uuid' },
+    error: {
+      type: 'object',
+      required: ['code', 'message'],
+      properties: { code: { type: 'string' }, message: { type: 'string' } },
+    },
+  },
+  required: ['error'],
+};
+const errors = (codes: number[]) =>
+  Object.fromEntries(
+    codes.map((code) => [
+      String(code),
+      response(
+        'Controlled error. No upstream body or credentials.',
+        errorSchema,
+      ),
+    ]),
+  );
+const inputSchema = z.toJSONSchema(requestSchema, { unrepresentable: 'any' });
+const dataSchema = inputSchema.properties?.data;
+if (dataSchema && typeof dataSchema === 'object')
+  Object.assign(dataSchema, {
+    allOf: [
+      {
+        if: { properties: { type: { const: 'MESSAGE' } }, required: ['type'] },
+        then: { required: ['group', 'message'] },
+        else: {
+          not: { anyOf: [{ required: ['group'] }, { required: ['message'] }] },
+        },
+      },
+    ],
+  });
+export const openApiDocument = {
+  openapi: '3.1.0',
+  info: {
+    title: service,
+    version: '0.2.0',
+    description:
+      'RAM-only HTTP demo. Restart loses profiles/revisions/receipts. No OAuth or durable delivery.',
+  },
+  components: {
+    securitySchemes: {
+      demoBearer: {
+        type: 'http',
+        scheme: 'bearer',
+        description: 'Separate DEMO_API_TOKEN, never the Rita API key.',
+      },
+      webhookSignature: {
+        type: 'apiKey',
+        in: 'header',
+        name: 'webhook-signature',
+        description:
+          'v1,<base64 HMAC-SHA256>; signed over id.timestamp.rawBody using the decoded whsec_ secret.',
+      },
+    },
+  },
+  paths: {
+    '/health': {
+      get: {
+        operationId: 'health',
+        responses: {
+          '200': response(
+            'HTTP liveness only; integrations may be unconfigured.',
+            {
+              type: 'object',
+              required: ['status', 'service'],
+              properties: {
+                status: { const: 'ok' },
+                service: { const: service },
+              },
+            },
+          ),
+        },
+      },
+    },
+    '/api/v1/webhooks/rita-id/employee-profile': {
+      post: {
+        operationId: 'receiveEmployeeProfile',
+        summary: 'Apply signed profile to RAM only',
+        description:
+          'Raw body max256 KiB. Timestamp within5 minutes. Exactly one employee; bigint revision string. Response does not promise durable storage. No demo Bearer token required.',
+        security: [{ webhookSignature: [] }],
+        parameters: [
+          {
+            name: 'webhook-id',
+            in: 'header',
+            required: true,
+            schema: { type: 'string', format: 'uuid' },
+          },
+          {
+            name: 'webhook-timestamp',
+            in: 'header',
+            required: true,
+            schema: { type: 'string', pattern: '^\\d{1,12}$' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: z.toJSONSchema(profileEnvelope, {
+                unrepresentable: 'any',
+              }),
+            },
+          },
+        },
+        responses: {
+          '200': response('Applied, duplicate or stale in this process only.', {
+            type: 'object',
+            additionalProperties: false,
+            required: ['messageId', 'status'],
+            properties: {
+              messageId: { type: 'string', format: 'uuid' },
+              status: { enum: ['applied', 'duplicate', 'stale'] },
+            },
+          }),
+          ...errors([400, 401, 409, 413, 503]),
+        },
+      },
+    },
+    ...Object.fromEntries(
+      Object.entries(templates).map(([route, summary]) => [
+        '/api/v1/examples/notifications/' + route,
+        {
+          post: {
+            operationId: 'notify_' + route.replaceAll('-', '_'),
+            summary,
+            description:
+              'Caller supplies stable messageId/occurredAt. Retry the same request manually after unknown outcomes. Scenario/Project/source are server-owned. No automatic retry.',
+            security: [{ demoBearer: [] }],
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': {
+                  schema: inputSchema,
+                  example: {
+                    messageId: '11111111-1111-4111-8111-111111111111',
+                    occurredAt: '2026-11-07T00:00:00Z',
+                    data: {
+                      actor: null,
+                      recipientUserIds: [
+                        '22222222-2222-4222-8222-222222222222',
+                      ],
+                      title: 'Fictional demo',
+                      custom_badge: null,
+                    },
+                  },
+                },
+              },
+            },
+            responses: {
+              '200': response(
+                'Rita accepted after its persistence commit; not user read.',
+                {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['messageId', 'status', 'simulation'],
+                  properties: {
+                    messageId: { type: 'string', format: 'uuid' },
+                    status: { const: 'accepted' },
+                    simulation: { const: true },
+                  },
+                },
+              ),
+              ...errors([400, 401, 409, 413, 502, 503, 504]),
+            },
+          },
+        },
+      ]),
+    ),
+  },
+};
+export function createDocumentationRouter() {
+  const router = Router();
+  router.get('/openapi.json', (_req, res) => res.json(openApiDocument));
+  router.use(
+    '/docs',
+    swaggerUi.serve,
+    swaggerUi.setup(undefined, {
+      swaggerOptions: {
+        url: '/openapi.json',
+        validatorUrl: null,
+        supportedSubmitMethods: ['get', 'post'],
+      },
+      customSiteTitle: service + ' API docs',
+    }),
+  );
+  return router;
+}

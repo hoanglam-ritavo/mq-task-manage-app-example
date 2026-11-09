@@ -1,0 +1,42 @@
+{
+  "messageId": "33333333-3333-4333-8333-333333333333",
+  "type": "outbound.sync.profile",
+  "schemaVersion": 1,
+  "source": "rita-id",
+  "occurredAt": "2026-11-07T00:00:00Z",
+  "revision": "9007199254740993",
+  "data": {
+    "syncRunId": "44444444-4444-4444-8444-444444444444",
+    "employees": [
+      {
+        "_id": "22222222-2222-4222-8222-222222222222",
+        "name": "Fictional employee",
+        "email": "fictional@example.test",
+        "employee_id": null,
+        "phone_number": null,
+        "active": true,
+        "is_developer": false,
+        "groups": "EMPLOYEE",
+        "avatar": null,
+        "position": {
+          "text": null,
+          "parser": {
+            "group": "",
+            "company": "",
+            "department": "",
+            "board": "",
+            "region": "",
+            "store": "",
+            "warehouse": "",
+            "factory": "",
+            "workshop": "",
+            "showroom": "",
+            "center": "",
+            "cafe": "",
+            "others": []
+          }
+        }
+      }
+    ]
+  }
+}
