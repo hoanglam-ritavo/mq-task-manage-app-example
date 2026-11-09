@@ -41,9 +41,19 @@ Ba credential có trách nhiệm khác nhau và phải riêng theo từng app/m�
 | GET    | `/health`                                       | Liveness; không xác nhận integration sẵn sàng |
 | GET    | `/docs`                                         | Swagger, public; có thể redirect tới /docs/   |
 | GET    | `/openapi.json`                                 | OpenAPI3.1, public                            |
+| GET    | `/api/v1/employee-profiles`                     | Bearer demo; list RAM phân trang              |
+| GET    | `/api/v1/employee-profiles/:userId`             | Bearer demo; detail RAM                       |
 | POST   | `/api/v1/webhooks/rita-id/employee-profile`     | Chữ ký webhook; áp dụng vào RAM               |
 | POST   | `/api/v1/examples/notifications/task-assigned`  | Bearer token demo; gọi Rita ID                |
 | POST   | `/api/v1/examples/notifications/task-commented` | Bearer token demo; gọi Rita ID                |
+
+## Xem profile trong RAM
+
+GET /api/v1/employee-profiles?page=1&pageSize=10 dùng Bearer DEMO_API_TOKEN và trả {items:[{revision,employee}],total,page,pageSize}. Page mặc định1, là số nguyên dương an toàn; pageSize chỉ10/20/50, mặc định10. Query lạ/trùng/array/object, số sai hoặc offset không an toàn trả400. Sort UUID lowercase tăng dần; total là số profiles, gồm active=false. Store rỗng/page vượt dữ liệu trả items rỗng.
+
+GET /api/v1/employee-profiles/:userId trả {revision,employee}; UUID không phân biệt casing. UUID sai400, chưa có404 PROFILE_NOT_FOUND. Cả hai trả Cache-Control: no-store, toàn bộ employee projection và revision chuỗi; không trả hash/receipt/credential. Token thiếu/sai401, chưa cấu hình503; auth chạy trước validation. Token có quyền đọc toàn bộ store của app.
+
+Đọc cùng store webhook, không gọi Rita ID hoặc gửi notification. Danh sách chỉ gồm profiles đã áp dụng từ khi process chạy; restart mất state. GET không bootstrap/backfill hoặc xác nhận đồng bộ đầy đủ. Có thể dùng Swagger Authorize với token demo rồi gọi hai GET.
 
 ## Nhận profile
 
@@ -53,7 +63,7 @@ Chữ ký là v1,<base64 HMAC-SHA256> trên id.timestamp.rawBody, dùng bytes ba
 
 200 trả {messageId,status:applied|duplicate|stale}. Duplicate cùng ID/body không áp dụng lại; cùng ID khác body409. Revision thấp hơn bị bỏ qua, bằng nhau khác nội dung409, cao hơn cập nhật profile. Dùng BigInt, không Number. Invalid JSON/schema400, body quá lớn413; chưa cấu hình hoặc hết capacity503.
 
-Mỗi app instance có tối đa1.000 profiles/10.000 receipts trong RAM; không eviction. Kiểm tra trước thay đổi state. Duplicate đã biết vẫn được nhận khi đầy. Restart làm mất toàn bộ profile/revision/dedup; có thể nhận lại event cũ như mới. HTTP200 không bảo đảm lưu bền và không phù hợp dùng làm production receiver. Restart để dọn demo phải đi kèm hiểu biết về mất state, không phải recovery production. Không có API public đọc profile cá nhân.
+Mỗi app instance có tối đa1.000 profiles/10.000 receipts trong RAM; không eviction. Kiểm tra trước thay đổi state. Duplicate đã biết vẫn được nhận khi đầy. Restart làm mất toàn bộ profile/revision/dedup; có thể nhận lại event cũ như mới. HTTP200 không bảo đảm lưu bền và không phù hợp dùng làm production receiver. Restart để dọn demo phải đi kèm hiểu biết về mất state, không phải recovery production. Hai GET đọc RAM yêu cầu Bearer token demo; không công khai profile.
 
 ## Gửi notification
 
@@ -87,9 +97,17 @@ Backend400/409/413/503 được ánh xạ bằng mã lỗi kiểm soát. Upstrea
 5. Bảo vệ Bearer token demo kể cả khi tunnel public toàn bộ app. Không công khai môi trường demo cho người không được phép; Swagger không cung cấp API key/signing secret. Xoay key/secret/token bằng quy trình riêng, khởi động lại example để nạp cấu hình.
 6. WEBHOOK_ENABLED mặc định false ở backend; bật có chủ ý. Enable webhook không tự bootstrap/backfill profile lịch sử. Backfill/đối soát thuộc công cụ backend, không tự replay từ example.
 
+## Log payload webhook profile
+
+Mỗi webhook đã xác thực chữ ký, validate schema và khớp messageId header/body ghi một structured log info: event=profile_webhook_received, messageId, revision, payload và thông điệp Profile webhook received. Payload là toàn bộ envelope JSON đã validate, gồm đầy đủ employee profile; không che hoặc cắt trường. Đây không phải raw bytes HTTP và không bao gồm request headers, signature hoặc credential cấu hình.
+
+Log này nằm trước store.apply(), nên vẫn xuất hiện nếu bước xử lý RAM sau đó trả conflict409 hoặc capacity503. Request sai chữ ký/timestamp, malformed JSON, sai schema, messageId không khớp hoặc body quá lớn không có payload log. Log Profile webhook processed in RAM và access log hiện có được giữ riêng để phân biệt đã nhận payload hợp lệ với kết quả xử lý.
+
+Không có flag payload riêng. LOG_LEVEL=info/debug/trace hiển thị log; warn/error/fatal/silent lọc log info. Log chứa dữ liệu cá nhân trong profile, không chứng minh cập nhật thành công hoặc lưu bền; RAM vẫn mất state sau restart. Notification payload và các credential không được bổ sung vào log.
+
 ## Lifecycle và kiểm chứng
 
-Shutdown idempotent: ngừng nhận HTTP, drain client work. Deadline HTTP10 giây đóng socket và đặt exit code lỗi, nhưng vẫn chờ client thực sự kết thúc. Timeout/disconnect không chứng minh request chưa được backend xử lý. Không log payload, credentials, raw upstream response hoặc exception; chỉ metadata kiểm soát.
+Shutdown idempotent: ngừng nhận HTTP, drain client work. Deadline HTTP10 giây đóng socket và đặt exit code lỗi, nhưng vẫn chờ client thực sự kết thúc. Timeout/disconnect không chứng minh request chưa được backend xử lý. Ngoài log payload profile hợp lệ được mô tả bên dưới, chỉ ghi metadata kiểm soát; không log notification body, credentials, headers, raw upstream response hoặc exception.
 
 ```sh
 npm run typecheck
@@ -103,6 +121,23 @@ npm run docs:check
 Tests dùng fixtures hư cấu, Supertest và HTTP client inject; không dotenv, personal JSON hoặc dịch vụ dùng chung. Golden signature có expected value tạo bởi signer backend với key hư cấu; tests không import runtime từ sibling. Không tuyên bố mocks chứng minh HTTPS public/TLS, DB, restart durability hoặc delivery thật.
 
 ## Current verification status
+
+### Profile RAM read API — 2026-11-09
+
+Revision 390c5a9 cộng working tree: thêm list/detail dùng cùng store webhook, strict pagination, Bearer auth, no-store và Swagger/docs. Giữ các thay đổi payload log đang có; không sửa .env, dependencies hoặc source backend/portal/mobile.
+
+- PASS: focused read/webhook/app/Swagger Vitest **85 tests /4 files**; final full Vitest **172 tests /8 files,0 failed,0 skipped**. Kiểm tra auth trước validation, query/UUID400, missing404, sort/pagination, full nullable/inactive profile, bigint string, isolation/copy và webhook duplicate/stale/conflict/new revision. GET không gọi notification client, không lộ internals/credentials và access logs chỉ dùng nhãn cố định.
+- PASS: typecheck, ESLint read-only, format:check và build; Swagger examples hư cấu hợp lệ với schema dùng chung. docs:check:3 Markdown files,28 links,8 routes,3 JSON examples. Diff whitespace đã kiểm tra; phần kết quả này nhận lượt docs/format/diff follow-up riêng.
+- Giới hạn: HTTP tests qua Express/Supertest, RAM fixtures và client doubles; không gọi backend/HTTPS/DB hoặc browser thật. Không chứng minh lưu bền hoặc đồng bộ đầy đủ; restart mất state. Các snapshot dưới là bằng chứng lịch sử, không phải kết quả chạy lại.
+
+### Full validated profile payload logging — 2026-11-09
+
+Source 390c5a9 cộng working tree của thay đổi log payload. Receiver luôn gọi logger.info với event profile_webhook_received, messageId, revision và toàn bộ envelope/profile đã xác thực, validate và khớp header/body ID, trước store.apply. Không có flag mới; LOG_LEVEL vẫn lọc info. Giữ log processed/access và toàn bộ HTTP/business behavior.
+
+- PASS: focused webhook/app Vitest **46 tests /2 files,0 failed,0 skipped** ở mỗi example. Kiểm tra payload đầy đủ đúng một record cho applied/duplicate/stale và store409/503; received log có trước store. Các request sai signature/timestamp/header/JSON/schema/ID, quá lớn hoặc chưa cấu hình receiver không có payload log. Pino info hiển thị payload và warn lọc payload; headers, signing secret, API key và Bearer token hư cấu không lộ trong logs.
+- PASS: typecheck, read-only ESLint, format:check và docs:check;3 Markdown files,26 links,6 routes,3 JSON examples. Lỗi vị trí tham số store trong fixture test mới đã được sửa trước lượt kiểm chứng cuối.
+- README/ARCHITECTURE/AGENTS cập nhật ngoại lệ logging chỉ cho profile webhook hợp lệ. Payload log có dữ liệu cá nhân trong profile, không phải raw request bytes và không chứng minh xử lý thành công/lưu bền.
+- Không đổi .env, dependencies, global logger, notification client, backend/portal/mobile hoặc API response. Tests dùng fixtures hư cấu, Supertest và stream/spies; không gọi backend/HTTPS thật. Không chạy build/full suite vì thay đổi giới hạn ở logging receiver. Final results prose được kiểm checker/format và diff riêng.
 
 ### HTTP migration — 2026-11-09
 

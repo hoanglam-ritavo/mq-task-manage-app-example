@@ -37,7 +37,12 @@ export function createApp(
                 ? '/api/v1/examples/notifications/*'
                 : route.startsWith('/api/v1/webhooks/rita-id/employee-profile')
                   ? '/api/v1/webhooks/rita-id/employee-profile'
-                  : '/unmatched',
+                  : route === '/api/v1/employee-profiles' ||
+                      route === '/api/v1/employee-profiles/'
+                    ? '/api/v1/employee-profiles'
+                    : route.startsWith('/api/v1/employee-profiles/')
+                      ? '/api/v1/employee-profiles/:userId'
+                      : '/unmatched',
           status: res.statusCode,
           durationMs: Math.round(performance.now() - start),
         },
@@ -51,9 +56,17 @@ export function createApp(
     createProfileWebhookRouter(config.rita.webhookSecret, logger, store),
   );
   app.use('/api/v1/examples/notifications', demoAuth(config.demoApiToken));
+  app.use(
+    '/api/v1/employee-profiles',
+    (_req, res, next) => {
+      res.set('Cache-Control', 'no-store');
+      next();
+    },
+    demoAuth(config.demoApiToken),
+  );
   app.use(express.json({ limit: '1mb' }));
   app.use('/health', createHealthRouter());
-  app.use('/api/v1', createApiRouter(client));
+  app.use('/api/v1', createApiRouter(client, store));
   app.use(createDocumentationRouter());
   app.use(notFound);
   app.use(createErrorHandler(logger));

@@ -1,3 +1,5 @@
+import { Writable } from 'node:stream';
+import { pino } from 'pino';
 import request from 'supertest';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, it, expect, vi } from 'vitest';
@@ -10,6 +12,7 @@ import {
   config,
   profileEvent,
   secret,
+  token,
   signature,
   userId,
   webhookPath,
@@ -190,13 +193,224 @@ describe('Signed profile webhook and volatile state', () => {
         }),
       ).toThrow();
   });
-  it('does not log profile bodies or signing secrets', async () => {
+
+  it('logs the entire validated envelope without transport credentials or raw request fields', async () => {
     const log = vi.fn(),
-      app = createApp(config, { info: log, error: log } as never);
-    await send(app, profileEvent());
+      app = createApp(config, { info: log, error: log } as never),
+      event = profileEvent();
+    const body = JSON.stringify(event),
+      headers = signature(body, event.messageId);
+    await request(app)
+      .post(webhookPath)
+      .set('Content-Type', 'application/json')
+      .set(headers)
+      .set('Authorization', 'Bearer ' + token)
+      .set('X-API-Key', config.rita.apiKey!)
+      .send(body)
+      .expect(200);
+    const received = log.mock.calls.filter(
+      ([, message]) => message === 'Profile webhook received',
+    );
+    expect(received).toHaveLength(1);
+    expect(received[0]![0]).toEqual({
+      event: 'profile_webhook_received',
+      messageId: event.messageId,
+      revision: event.revision,
+      payload: event,
+    });
     const output = JSON.stringify(log.mock.calls);
-    expect(output).not.toContain('fictional@example.test');
-    expect(output).not.toContain(secret);
-    expect(output).toContain('revision');
+    expect(output).toContain('fictional@example.test');
+    for (const forbidden of [
+      secret,
+      token,
+      config.rita.apiKey!,
+      headers['webhook-signature'],
+      'Authorization',
+      'webhook-signature',
+      'webhook-timestamp',
+      'rawBody',
+    ])
+      expect(output).not.toContain(forbidden);
+    const processed = log.mock.calls.find(
+      ([, message]) => message === 'Profile webhook processed in RAM',
+    );
+    expect(processed?.[0]).toMatchObject({
+      messageId: event.messageId,
+      revision: event.revision,
+      outcome: 'applied',
+      durationMs: expect.any(Number),
+    });
+    expect(processed?.[0]).not.toHaveProperty('payload');
+    expect(
+      log.mock.calls.find(([, message]) => message === 'HTTP request')?.[0],
+    ).toMatchObject({ method: 'POST', path: webhookPath, status: 200 });
   });
+  it.each(['applied', 'duplicate', 'stale', 'conflict', 'capacity'] as const)(
+    'logs one received payload before RAM processing for %s',
+    async (kind) => {
+      const log = vi.fn(),
+        store = new ProfileStore(kind === 'capacity' ? 0 : 1000),
+        app = createApp(
+          config,
+          { info: log, error: log } as never,
+          undefined,
+          store,
+        ),
+        event = profileEvent();
+      if (kind === 'duplicate' || kind === 'conflict')
+        await send(app, event).expect(200);
+      if (kind === 'stale')
+        await send(app, profileEvent('9007199254740994')).expect(200);
+      if (kind === 'conflict')
+        event.data.employees[0]!.name = 'Conflicting fictional profile';
+      log.mockClear();
+      const apply = vi.spyOn(store, 'apply');
+      const expectedStatus =
+        kind === 'conflict' ? 409 : kind === 'capacity' ? 503 : 200;
+      const response = await send(app, event).expect(expectedStatus);
+      const receivedIndexes = log.mock.calls.flatMap(([, message], index) =>
+        message === 'Profile webhook received' ? [index] : [],
+      );
+      expect(receivedIndexes).toHaveLength(1);
+      const receivedIndex = receivedIndexes[0]!;
+      expect(log.mock.calls[receivedIndex]![0]).toMatchObject({
+        event: 'profile_webhook_received',
+        messageId: event.messageId,
+        revision: event.revision,
+        payload: event,
+      });
+      expect(log.mock.invocationCallOrder[receivedIndex]).toBeLessThan(
+        apply.mock.invocationCallOrder[0]!,
+      );
+      const processed = log.mock.calls.filter(
+        ([, message]) => message === 'Profile webhook processed in RAM',
+      );
+      if (expectedStatus === 200) {
+        expect(response.body).toEqual({
+          messageId: event.messageId,
+          status: kind,
+        });
+        expect(processed).toHaveLength(1);
+        expect(processed[0]![0]).toMatchObject({ outcome: kind });
+      } else {
+        expect(processed).toHaveLength(0);
+        expect(response.body.error.code).toBe(
+          kind === 'conflict'
+            ? 'EVENT_IDENTITY_CONFLICT'
+            : 'DEMO_CAPACITY_REACHED',
+        );
+      }
+      apply.mockRestore();
+    },
+  );
+  it.each([
+    'signature',
+    'expired',
+    'missing-header',
+    'duplicate-header',
+    'malformed-json',
+    'schema',
+    'id-mismatch',
+    'unconfigured',
+    'oversized',
+  ] as const)(
+    'does not log payload rejected before processing: %s',
+    async (kind) => {
+      const log = vi.fn(),
+        event = profileEvent();
+      let body = JSON.stringify(event);
+      if (kind === 'malformed-json') body = '{broken';
+      if (kind === 'schema')
+        body = JSON.stringify({ ...event, schemaVersion: 2 });
+      if (kind === 'oversized') body = 'x'.repeat(256 * 1024 + 1);
+      const headers: Record<string, string | string[]> = {
+        ...signature(body, event.messageId),
+      };
+      if (kind === 'signature')
+        headers['webhook-signature'] =
+          'v1,' + Buffer.alloc(32).toString('base64');
+      if (kind === 'expired')
+        Object.assign(
+          headers,
+          signature(
+            body,
+            event.messageId,
+            String(Math.floor(Date.now() / 1000) - 301),
+          ),
+        );
+      if (kind === 'missing-header') delete headers['webhook-signature'];
+      if (kind === 'duplicate-header')
+        headers['webhook-id'] = [event.messageId, event.messageId];
+      if (kind === 'id-mismatch')
+        Object.assign(headers, signature(body, randomUUID()));
+      const app = createApp(
+        kind === 'unconfigured'
+          ? { ...config, rita: { ...config.rita, webhookSecret: undefined } }
+          : config,
+        { info: log, error: log } as never,
+      );
+      const expected =
+        kind === 'oversized'
+          ? 413
+          : kind === 'unconfigured'
+            ? 503
+            : ['malformed-json', 'schema', 'id-mismatch'].includes(kind)
+              ? 400
+              : 401;
+      await request(app)
+        .post(webhookPath)
+        .set('Content-Type', 'application/json')
+        .set(headers)
+        .send(body)
+        .expect(expected);
+      expect(
+        log.mock.calls.filter(
+          ([, message]) => message === 'Profile webhook received',
+        ),
+      ).toHaveLength(0);
+      expect(
+        log.mock.calls.filter(
+          ([, message]) => message === 'Profile webhook processed in RAM',
+        ),
+      ).toHaveLength(0);
+      for (const [record] of log.mock.calls)
+        expect(record).not.toHaveProperty('payload');
+      expect(JSON.stringify(log.mock.calls)).not.toContain(
+        'fictional@example.test',
+      );
+    },
+  );
+  it.each(['info', 'warn'] as const)(
+    'honors Pino level %s without a separate payload flag',
+    async (level) => {
+      let output = '';
+      const stream = new Writable({
+        write(chunk, _encoding, callback) {
+          output += String(chunk);
+          callback();
+        },
+      });
+      const logger = pino(
+          { level, base: { service: 'fictional-example' } },
+          stream,
+        ),
+        event = profileEvent();
+      await send(createApp(config, logger), event).expect(200);
+      const records: Record<string, unknown>[] = output.trim()
+        ? output
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line) as Record<string, unknown>)
+        : [];
+      const received = records.filter(
+        (record) => record.event === 'profile_webhook_received',
+      );
+      expect(received).toHaveLength(level === 'info' ? 1 : 0);
+      if (level === 'info')
+        expect(received[0]).toMatchObject({
+          payload: event,
+          msg: 'Profile webhook received',
+        });
+    },
+  );
 });

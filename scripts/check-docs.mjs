@@ -78,6 +78,8 @@ const expected = [
   '/docs',
   '/openapi.json',
   '/api/v1/webhooks/rita-id/employee-profile',
+  '/api/v1/employee-profiles',
+  '/api/v1/employee-profiles/:userId',
   ...(pkg.name === 'sale-app-example'
     ? [
         'order-created',

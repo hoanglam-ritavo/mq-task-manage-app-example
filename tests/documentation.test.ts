@@ -1,4 +1,8 @@
 import { readFileSync } from 'node:fs';
+import {
+  profileViewSchema,
+  profilePageSchema,
+} from '../src/modules/employee-profile/read.schema.js';
 import { profileEnvelope } from '../src/modules/employee-profile/webhook.js';
 
 import request from 'supertest';
@@ -53,6 +57,8 @@ describe('OpenAPI HTTP contract', () => {
       [
         '/health',
         '/api/v1/webhooks/rita-id/employee-profile',
+        '/api/v1/employee-profiles',
+        '/api/v1/employee-profiles/{userId}',
         ...Object.keys(templates).map(
           (r) => '/api/v1/examples/notifications/' + r,
         ),
@@ -111,5 +117,74 @@ describe('OpenAPI HTTP contract', () => {
       expect(schema.properties.data.properties).not.toHaveProperty(key);
     expect(schema.properties.data.allOf).toHaveLength(1);
     expect(requestSchema.parse(input()).messageId).toBeDefined();
+  });
+});
+
+describe('Profile read OpenAPI contract', () => {
+  it('documents both protected GETs, schemas, errors, pagination and no-store', async () => {
+    const doc = (
+      await request(createApp(config)).get('/openapi.json').expect(200)
+    ).body;
+    const list = doc.paths['/api/v1/employee-profiles'].get;
+    const detail = doc.paths['/api/v1/employee-profiles/{userId}'].get;
+    expect(list.operationId).toBe('listEmployeeProfiles');
+    expect(detail.operationId).toBe('getEmployeeProfile');
+    expect(list.parameters.map((v: { name: string }) => v.name)).toEqual([
+      'page',
+      'pageSize',
+    ]);
+    expect(list.parameters[0].schema).toMatchObject({
+      minimum: 1,
+      maximum: Number.MAX_SAFE_INTEGER,
+      default: 1,
+    });
+    expect(list.parameters[1].schema).toEqual({
+      type: 'integer',
+      enum: [10, 20, 50],
+      default: 10,
+    });
+    expect(detail.parameters[0]).toMatchObject({
+      name: 'userId',
+      in: 'path',
+      required: true,
+      schema: { type: 'string', format: 'uuid' },
+    });
+    expect(Object.keys(list.responses)).toEqual(['200', '400', '401', '503']);
+    expect(Object.keys(detail.responses)).toEqual([
+      '200',
+      '400',
+      '401',
+      '404',
+      '503',
+    ]);
+    for (const op of [list, detail]) {
+      expect(op.security).toEqual([{ demoBearer: [] }]);
+      expect(op.responses['200'].headers['Cache-Control'].schema.const).toBe(
+        'no-store',
+      );
+    }
+    expect(
+      profileViewSchema.safeParse(
+        detail.responses['200'].content['application/json'].example,
+      ).success,
+    ).toBe(true);
+    expect(
+      profilePageSchema.safeParse(
+        list.responses['200'].content['application/json'].example,
+      ).success,
+    ).toBe(true);
+    const item = detail.responses['200'].content['application/json'].schema;
+    expect(item.additionalProperties).toBe(false);
+    expect(item.required).toEqual(['revision', 'employee']);
+    expect(item.properties.revision.type).toBe('string');
+    expect(
+      list.responses['200'].content['application/json'].schema.properties.items
+        .items,
+    ).toMatchObject({ properties: item.properties });
+    const employee =
+      doc.paths['/api/v1/webhooks/rita-id/employee-profile'].post.requestBody
+        .content['application/json'].schema.properties.data.properties.employees
+        .items;
+    expect(item.properties.employee).toEqual(employee);
   });
 });

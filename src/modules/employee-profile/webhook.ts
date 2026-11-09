@@ -4,6 +4,7 @@ import { Router, raw } from 'express';
 import type { Logger } from 'pino';
 import { z } from 'zod';
 import { employeeProfilesData } from './schema.js';
+import type { ProfileView } from './read.schema.js';
 import { utcTimestamp, uuid } from '../../shared/contracts.js';
 import { AppError } from '../../shared/errors/app-error.js';
 export const profileEnvelope = z.strictObject({
@@ -91,6 +92,25 @@ export class ProfileStore {
       });
     this.receipts.set(id, hash);
     return status;
+  }
+  list(page: number, pageSize: number) {
+    const keys = [...this.profiles.keys()].sort();
+    const offset = (page - 1) * pageSize;
+    return {
+      items: keys.slice(offset, offset + pageSize).map((key) => this.get(key)!),
+      total: keys.length,
+      page,
+      pageSize,
+    };
+  }
+  get(userId: string): ProfileView | undefined {
+    const profile = this.profiles.get(userId.toLowerCase());
+    return profile
+      ? {
+          revision: profile.revision.toString(),
+          employee: structuredClone(profile.employee),
+        }
+      : undefined;
   }
   snapshot(userId: string) {
     const p = this.profiles.get(userId.toLowerCase());
@@ -200,6 +220,15 @@ export function createProfileWebhookRouter(
           'EVENT_ID_MISMATCH',
           'Webhook identity does not match.',
         );
+      logger.info(
+        {
+          event: 'profile_webhook_received',
+          messageId: event.messageId,
+          revision: event.revision,
+          payload: event,
+        },
+        'Profile webhook received',
+      );
       const status = store.apply(event, req.body as Buffer);
       logger.info(
         {
